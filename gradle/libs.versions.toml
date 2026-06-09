@@ -1,0 +1,17 @@
+[versions]
+agp = "8.7.3"
+kotlin = "2.0.21"
+androidx-webkit = "1.12.1"
+androidx-annotation = "1.9.1"
+junit = "4.13.2"
+json = "20240303"
+
+[libraries]
+androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "androidx-webkit" }
+androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "androidx-annotation" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+org-json = { group = "org.json", name = "json", version.ref = "json" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
