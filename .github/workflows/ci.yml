@@ -23,6 +23,9 @@ jobs:
       - name: Build release AAR
         run: ./gradlew :meldsdk:assembleRelease
 
+      - name: Build example app
+        run: ./gradlew :example:assembleDebug
+
       - name: Unit tests
         run: ./gradlew :meldsdk:testReleaseUnitTest
 

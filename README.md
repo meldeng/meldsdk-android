@@ -75,6 +75,12 @@ signed widget URL in a `WebView` through a generic, provider-neutral `WebViewHos
   compromised subframe can't post fake lifecycle events;
 - grants the camera for KYC and dispatches all events on the main thread.
 
+## Example app
+
+A complete, runnable Compose demo is checked in at [`example/`](example/) — a styled checkout
+card, a live quote, then the Mercuryo widget with a status banner + event log (parity with the
+iOS and web demos). See [example/README.md](example/README.md) for credentials and how to run it.
+
 ## License
 
 Proprietary. See [LICENSE](LICENSE).

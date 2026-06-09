@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "meldsdk-android"
 include(":meldsdk")
+include(":example")
