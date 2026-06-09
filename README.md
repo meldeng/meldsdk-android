@@ -57,10 +57,38 @@ if (Meld.capabilities(order).embeddable) {
 }
 ```
 
-Settlement is the Meld webhook, never a client event. `onStatusChange` with `COMPLETED` is the
-provider's "order complete", not settlement.
-
 All callbacks are invoked on the main thread.
+
+## Events
+
+| Event | Fires when | Do |
+|---|---|---|
+| `onReady` | Widget document loaded | Hide spinner |
+| `onPaymentSubmitted` | User finished the provider payment flow (UX hint only) | Show "processing" |
+| `onStatusChange` | Order status changed; `e.status` is `PENDING` \| `COMPLETED` \| `FAILED` \| `CANCELLED` | React to status; `COMPLETED` = provider "order complete" (still not settlement) |
+| `onCancel` | User cancelled | Show retry CTA |
+| `onError` | Load failure, bad order, or terminal `FAILED` status | Show error; `e.recoverable` says retry vs. new order |
+
+`status` is normalized across providers — code against it, not the raw provider string (in
+`e.providerStatus`). A terminal `FAILED` also fires `onError`, and a `CANCELLED` also fires
+`onCancel`. Every callback also receives the `orderId`.
+
+## Settlement — webhook, never the SDK
+
+Neither `onPaymentSubmitted` nor `onStatusChange` with `COMPLETED` is settlement — both are
+client-side UX signals. Mark the order paid only when your backend receives Meld's
+`TRANSACTION_STATUS_CHANGED` webhook. Show "processing", not "success", until then.
+
+## Mercuryo — prerequisites
+
+- **KYC:** the customer needs an APPROVED Sumsub verification linked to their Meld customer before
+  the order — Meld shares it at order creation so the widget skips its own KYC. Without it, order
+  creation fails with `KYC_NOT_COMPLETED`.
+- **Camera:** Mercuryo's in-widget KYC liveness needs the camera. The SDK declares the `CAMERA`
+  permission, but your app must hold it at **runtime** before mounting — request it (e.g. with the
+  Activity Result API) or the widget's camera grant is denied.
+- **End-user IP:** create the order with the end user's public IP (`clientIpAddress`); Mercuryo
+  binds the widget signature to it.
 
 ## Architecture
 

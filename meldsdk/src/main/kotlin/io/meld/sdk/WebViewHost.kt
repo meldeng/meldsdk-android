@@ -1,6 +1,8 @@
 package io.meld.sdk
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -11,6 +13,7 @@ import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.webkit.WebViewCompat
@@ -41,6 +44,7 @@ internal class WebViewHost(
     private val main = Handler(Looper.getMainLooper())
     private var webView: WebView? = null
     private var didFireReady = false
+    private var loadFailed = false
 
     @SuppressLint("SetJavaScriptEnabled")
     fun mount(host: ViewGroup) {
@@ -48,7 +52,10 @@ internal class WebViewHost(
         // reused host) tears the previous one down first so the old bridge can't leak or stack a
         // second WebView on top.
         if (webView != null) unmount()
+        didFireReady = false
+        loadFailed = false
 
+        val appContext = host.context.applicationContext
         val web = WebView(host.context)
         web.settings.apply {
             javaScriptEnabled = true
@@ -62,8 +69,10 @@ internal class WebViewHost(
 
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
-                // Page loaded; a provider's own ready event (if any) also fires this — whichever first.
-                fireReadyOnce()
+                // Page loaded; a provider's own ready event (if any) also fires this — whichever
+                // first. Don't report ready if the main-frame load already failed (e.g. an HTTP
+                // error page rendered).
+                if (!loadFailed) fireReadyOnce()
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
@@ -80,6 +89,7 @@ internal class WebViewHost(
             ) {
                 // Only surface main-frame failures; subresource errors are the page's concern.
                 if (request?.isForMainFrame == true) {
+                    loadFailed = true
                     emitError(
                         code = "PROVIDER_LOAD_FAILED",
                         message = error?.description?.toString() ?: "load failed",
@@ -88,17 +98,46 @@ internal class WebViewHost(
                     )
                 }
             }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?,
+            ) {
+                // A signed widget URL that 4xx/5xx (expired/invalid signature is the common case)
+                // still "loads" an error body and would otherwise fire onReady as success. Treat a
+                // main-frame HTTP error as a load failure instead.
+                if (request?.isForMainFrame == true) {
+                    loadFailed = true
+                    val status = errorResponse?.statusCode ?: 0
+                    emitError(
+                        code = "PROVIDER_LOAD_FAILED",
+                        message = "Widget URL returned HTTP $status",
+                        detail = "httpStatus #$status",
+                        recoverable = status >= 500, // 5xx may be transient; 4xx needs a new order
+                    )
+                }
+            }
         }
 
         web.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // KYC: the widget asks for the camera for document/selfie capture. Grant only the
-                // video-capture resource it requests; deny anything else.
+                // KYC: the widget asks for the camera for document/selfie capture. A WebChromeClient
+                // grant only authorizes the web content — the app process must already hold the
+                // CAMERA runtime permission, or getUserMedia fails anyway. Only grant if it does.
                 main.post {
-                    val granted = request.resources
-                        .filter { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE }
-                        .toTypedArray()
-                    if (granted.isNotEmpty()) request.grant(granted) else request.deny()
+                    val wantsCamera = request.resources.any { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE }
+                    val hasCameraPermission = appContext.checkSelfPermission(Manifest.permission.CAMERA) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (wantsCamera && hasCameraPermission) {
+                        request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                    } else {
+                        if (wantsCamera && !hasCameraPermission) {
+                            Log.w(TAG, "widget requested the camera but the app lacks the CAMERA " +
+                                "runtime permission; denying. Request it before mounting for KYC.")
+                        }
+                        request.deny()
+                    }
                 }
             }
         }
@@ -116,6 +155,12 @@ internal class WebViewHost(
     }
 
     override fun unmount() {
+        // WebView methods must run on the thread that created it (main). Integrators may call
+        // handle.unmount() from anywhere, so hop to main if needed.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post { unmount() }
+            return
+        }
         val web = webView ?: return
         web.removeJavascriptInterface(BRIDGE_NAME)
         web.stopLoading()
