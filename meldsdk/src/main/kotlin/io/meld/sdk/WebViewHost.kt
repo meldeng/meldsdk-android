@@ -144,12 +144,7 @@ internal class WebViewHost(
             }
         }
 
-        web.addJavascriptInterface(Bridge(), BRIDGE_NAME)
-        // Inject the bridge at document start so it's listening before the widget posts anything.
-        // Injected into all frames ("*"); the JS-level origin filter is what enforces trust.
-        if (documentStartSupported) {
-            WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), setOf("*"))
-        }
+        installBridge(web)
 
         host.addView(web)
         web.loadUrl(url)
@@ -182,6 +177,35 @@ internal class WebViewHost(
     }
 
     // MARK: - Bridge (window messages -> interpret -> Meld events)
+
+    /**
+     * Installs the native bridge. Prefers `addWebMessageListener`, which scopes `window.meld` to
+     * the trusted provider origins and enforces the source origin natively — so even if the widget
+     * navigates to another origin, that page never gets a native bridge to forge events from. Falls
+     * back to `addJavascriptInterface` (broader, JS-origin-filtered) only on WebViews that lack the
+     * feature. We deliberately don't allowlist navigation itself: card 3DS redirects to issuer/ACS
+     * domains, and blocking those would break payments.
+     */
+    private fun installBridge(web: WebView) {
+        val originRules = allowedOrigins.ifEmpty { setOf("*") }
+        val originScoped = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+
+        if (originScoped) {
+            // `window.meld` is injected by the framework only into originRules frames; onPostMessage
+            // is invoked only for messages from those origins.
+            WebViewCompat.addWebMessageListener(web, BRIDGE_NAME, originRules) { _, message, _, _, _ ->
+                message.data?.let { json -> main.post { handleBridgeMessage(json) } }
+            }
+            WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), originRules)
+        } else {
+            web.addJavascriptInterface(Bridge(), BRIDGE_NAME)
+            // No origin scoping available here, so inject everywhere and rely on the JS-level filter.
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), setOf("*"))
+            }
+        }
+    }
 
     private inner class Bridge {
         @JavascriptInterface
