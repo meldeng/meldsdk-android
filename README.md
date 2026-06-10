@@ -10,26 +10,18 @@ data — the provider's widget does, loaded over HTTPS in a `WebView`.
 
 ## Install
 
-Maven coordinates `io.meld:meldsdk` (published via JitPack from a tag):
+Add the dependency (published to Maven Central as `io.meld:meldsdk`):
 
 ```kotlin
-// settings.gradle.kts
-dependencyResolutionManagement {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://jitpack.io")
-    }
-}
-
 // app/build.gradle.kts
 dependencies {
-    implementation("io.meld:meldsdk:0.1.0")
+    implementation("io.meld:meldsdk:0.1.1")
 }
 ```
 
-Requires `minSdk 24`. The library declares `INTERNET` and `CAMERA` permissions (camera is used
-for in-widget KYC document/selfie capture).
+`mavenCentral()` is in the default repositories of new Android projects; add it if yours doesn't
+have it. Requires `minSdk 24`. The library declares `INTERNET` and `CAMERA` permissions (camera is
+used for in-widget KYC document/selfie capture).
 
 ## Usage
 
@@ -90,18 +82,11 @@ client-side UX signals. Mark the order paid only when your backend receives Meld
 - **End-user IP:** create the order with the end user's public IP (`clientIpAddress`); Mercuryo
   binds the widget signature to it.
 
-## Architecture
+## Security
 
-The SDK is a container manager + event relay; everything provider-specific lives behind a
-`MeldAdapter` in the registry. The order's `paymentMethodType` / `renderMode` select the adapter,
-so supporting a new provider is a new adapter, never a change to the public API. Mercuryo loads its
-signed widget URL in a `WebView` through a generic, provider-neutral `WebViewHost`, which:
-
-- injects a bridge at document start (`WebViewCompat.addDocumentStartJavaScript`) that forwards the
-  widget's `window` messages to native;
-- **filters those messages by origin** against the provider allowlist, so a malicious or
-  compromised subframe can't post fake lifecycle events;
-- grants the camera for KYC and dispatches all events on the main thread.
+The SDK never sees card data — capture happens entirely in the provider's widget, loaded over
+HTTPS in a `WebView`. The bridge that relays the widget's lifecycle events to your handlers is
+scoped to the provider's origins, so a compromised or third-party subframe can't post fake events.
 
 ## Example app
 
