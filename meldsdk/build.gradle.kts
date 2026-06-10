@@ -52,13 +52,13 @@ dependencies {
     testImplementation(libs.org.json)
 }
 
-// Maven coordinates: io.meld:meldsdk. JitPack consumes this via publishToMavenLocal.
+// Maven coordinates: io.meld:meldsdk (registry TBD — Maven Central or JitPack).
 publishing {
     publications {
         register<MavenPublication>("release") {
             groupId = "io.meld"
             artifactId = "meldsdk"
-            version = "0.1.0"
+            version = "0.1.1"
 
             afterEvaluate {
                 from(components["release"])
