@@ -1,0 +1,4 @@
+<resources>
+    <!-- Base theme for the Activity; Compose's MaterialTheme drives the actual UI styling. -->
+    <style name="Theme.MeldDemo" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
