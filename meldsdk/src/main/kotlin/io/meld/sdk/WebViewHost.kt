@@ -70,12 +70,14 @@ internal class WebViewHost(
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 // Page loaded; a provider's own ready event (if any) also fires this — whichever
-                // first. Don't report ready if the main-frame load already failed (e.g. an HTTP
-                // error page rendered).
-                if (!loadFailed) fireReadyOnce()
+                // first. fireReadyOnce() is suppressed if the main-frame load failed.
+                fireReadyOnce()
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                // A new main-frame navigation starts fresh: clear a prior failure so a later
+                // successful load (e.g. a redirect after a transient error) can still report ready.
+                loadFailed = false
                 // Fallback bridge injection for WebViews that don't support document-start scripts.
                 if (!documentStartSupported) {
                     view?.evaluateJavascript(bridgeScript(), null)
@@ -172,7 +174,9 @@ internal class WebViewHost(
     }
 
     private fun fireReadyOnce() {
-        if (didFireReady) return
+        // Gate both ready paths (onPageFinished and a provider 'ready' message) on loadFailed, so a
+        // failed main-frame load can't surface as ready from either route.
+        if (didFireReady || loadFailed) return
         didFireReady = true
         handlers.onReady?.invoke(orderId)
     }
