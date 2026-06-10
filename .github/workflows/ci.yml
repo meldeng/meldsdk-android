@@ -30,4 +30,4 @@ jobs:
         run: ./gradlew :meldsdk:testReleaseUnitTest
 
       - name: Publish to Maven local (smoke-test publishing)
-        run: ./gradlew :meldsdk:publishReleasePublicationToMavenLocal
+        run: ./gradlew :meldsdk:publishToMavenLocal

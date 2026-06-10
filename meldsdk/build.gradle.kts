@@ -1,7 +1,9 @@
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    `maven-publish`
+    alias(libs.plugins.vanniktech.maven.publish)
 }
 
 android {
@@ -28,13 +30,6 @@ android {
         jvmTarget = "17"
     }
 
-    // Expose a single 'release' variant for publishing, with sources for consumers.
-    publishing {
-        singleVariant("release") {
-            withSourcesJar()
-        }
-    }
-
     testOptions {
         unitTests {
             // MeldOrder.fromJson uses org.json, which is a stub in unit tests; the real impl is
@@ -52,17 +47,45 @@ dependencies {
     testImplementation(libs.org.json)
 }
 
-// Maven coordinates: io.meld:meldsdk (registry TBD — Maven Central or JitPack).
-publishing {
-    publications {
-        register<MavenPublication>("release") {
-            groupId = "io.meld"
-            artifactId = "meldsdk"
-            version = "0.1.1"
+// Publishing to Maven Central via the Sonatype Central Portal (central.sonatype.com).
+// Release-time setup (your side): verify the `io.meld` namespace, then provide via env/CI secrets:
+//   ORG_GRADLE_PROJECT_mavenCentralUsername / ...Password  (Central Portal user token)
+//   ORG_GRADLE_PROJECT_signingInMemoryKey / ...Password     (GPG private key + passphrase)
+// Then: ./gradlew :meldsdk:publishToMavenCentral
+mavenPublishing {
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
 
-            afterEvaluate {
-                from(components["release"])
+    // Central requires signed artifacts. Sign only when a key is configured, so the unsigned
+    // publishToMavenLocal used by CI and the React Native example keeps working without a key.
+    if (providers.gradleProperty("signingInMemoryKey").isPresent ||
+        System.getenv("ORG_GRADLE_PROJECT_signingInMemoryKey") != null
+    ) {
+        signAllPublications()
+    }
+
+    coordinates("io.meld", "meldsdk", "0.1.1")
+
+    pom {
+        name.set("MeldSDK")
+        description.set("Embed a crypto on/off-ramp provider widget (Mercuryo card) in your Android app.")
+        url.set("https://github.com/meldeng/meldsdk-android")
+        licenses {
+            license {
+                name.set("Proprietary")
+                url.set("https://github.com/meldeng/meldsdk-android/blob/main/LICENSE")
             }
+        }
+        developers {
+            developer {
+                id.set("meld")
+                name.set("Meld")
+                email.set("support@meld.io")
+            }
+        }
+        scm {
+            url.set("https://github.com/meldeng/meldsdk-android")
+            connection.set("scm:git:git://github.com/meldeng/meldsdk-android.git")
+            developerConnection.set("scm:git:ssh://git@github.com/meldeng/meldsdk-android.git")
         }
     }
 }
