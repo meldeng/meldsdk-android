@@ -19,7 +19,10 @@ internal class MercuryoCardAdapter : MeldAdapter {
     override val capabilities =
         MeldCapabilities(embeddable = true, surface = "embedded", requiresUserGesture = false)
 
-    override fun matches(paymentMethodType: String?, renderMode: String?): Boolean =
+    // Generic IFRAME-card adapter: matches any CREDIT_DEBIT_CARD / IFRAME order. Provider-specific
+    // IFRAME adapters (e.g. Uphold) are registered ahead of this one and host-gate on widgetUrl, so
+    // only non-provider-specific IFRAME card orders fall through to Mercuryo.
+    override fun matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?): Boolean =
         paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME"
 
     override fun mount(

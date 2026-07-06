@@ -2,7 +2,6 @@ package io.meld.demo
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -25,15 +24,21 @@ object DemoConfig {
 
     const val VERSION = "2026-05-01"
 
-    // Fixed corridor for the demo: 15 USD -> BTC, US, Mercuryo card.
+    // Fixed corridor for the demo: 15 USD -> USDC, US, Uphold card.
     const val SOURCE_AMOUNT = "15"
     const val SOURCE_CURRENCY = "USD"
-    const val DESTINATION_CURRENCY = "BTC"
+    const val DESTINATION_CURRENCY = "USDC"
     const val COUNTRY = "US"
-    const val DEFAULT_WALLET = "bc1qr74wmrcwqq9w5yxczxj6udts9mnqsh3xlhk5yp"
+    const val DEFAULT_WALLET = "0x4838B106FCe9647Bdf1E7877BF73cE8B0BAD5f97"
 }
 
-data class DemoQuote(val destinationAmount: Double?, val totalFee: Double?, val exchangeRate: Double?)
+data class DemoQuote(
+    val serviceProvider: String,
+    val destinationAmount: Double?,
+    val totalFee: Double?,
+    val exchangeRate: Double?,
+    val kycMode: String?,
+)
 
 class DemoException(message: String) : Exception(message)
 
@@ -56,8 +61,13 @@ class OrderService {
         null
     }
 
-    /** `POST /payments/crypto/quote?integrationMode=HEADLESS` — the live quote for the corridor. */
-    suspend fun quote(): DemoQuote = withContext(Dispatchers.IO) {
+    /**
+     * `POST /payments/crypto/quote?integrationMode=HEADLESS` — one quote per headless-capable provider for
+     * the corridor (no `serviceProviders` filter), so the user can pick which provider to use.
+     */
+    suspend fun quotes(): List<DemoQuote> = withContext(Dispatchers.IO) {
+        // Headless providers that quote on-behalf-of a customer (e.g. Uphold) require the customer id
+        // on the quote itself, so the provider can resolve that customer's service-provider identity.
         val body = JSONObject(
             mapOf(
                 "countryCode" to DemoConfig.COUNTRY,
@@ -65,32 +75,43 @@ class OrderService {
                 "sourceCurrencyCode" to DemoConfig.SOURCE_CURRENCY,
                 "destinationCurrencyCode" to DemoConfig.DESTINATION_CURRENCY,
                 "paymentMethodType" to "CREDIT_DEBIT_CARD",
-                "serviceProviders" to JSONArray(listOf("MERCURYO")),
             ),
         )
+        if (DemoConfig.meldCustomerId.isNotEmpty()) body.put("customerId", DemoConfig.meldCustomerId)
         val (status, data) = post("/payments/crypto/quote?integrationMode=HEADLESS", body)
         val json = JSONObject(data)
         val quotes = json.optJSONArray("quotes")
         if (status !in 200..299 || quotes == null || quotes.length() == 0) {
             throw DemoException(json.optString("message").ifEmpty { "no quotes returned" })
         }
-        val q = quotes.getJSONObject(0)
-        DemoQuote(
-            destinationAmount = q.optDoubleOrNull("destinationAmount"),
-            totalFee = q.optDoubleOrNull("totalFee"),
-            exchangeRate = q.optDoubleOrNull("exchangeRate"),
-        )
+        buildList {
+            for (i in 0 until quotes.length()) {
+                val q = quotes.getJSONObject(i)
+                val provider = q.optString("serviceProvider").ifEmpty { null } ?: continue
+                add(
+                    DemoQuote(
+                        serviceProvider = provider,
+                        destinationAmount = q.optDoubleOrNull("destinationAmount"),
+                        totalFee = q.optDoubleOrNull("totalFee"),
+                        exchangeRate = q.optDoubleOrNull("exchangeRate"),
+                        kycMode = q.optString("kycMode").ifEmpty { null },
+                    ),
+                )
+            }
+        }
     }
 
-    /** `POST /crypto/order/headless` — returns the raw order JSON to hand to `MeldOrder.fromJson`. */
-    suspend fun createOrder(customerId: String, wallet: String, clientIP: String?): String =
+    /**
+     * `POST /crypto/order/headless/onramp` — returns the raw order JSON to hand to `MeldOrder.fromJson`.
+     * `serviceProvider` is whichever quote the user selected.
+     */
+    suspend fun createOrder(serviceProvider: String, customerId: String, wallet: String, clientIP: String?): String =
         withContext(Dispatchers.IO) {
             val body = JSONObject(
                 buildMap<String, Any?> {
                     put("customerId", customerId)
                     put("externalOrderId", "android-demo-${System.currentTimeMillis()}")
-                    put("sessionType", "BUY")
-                    put("serviceProvider", "MERCURYO")
+                    put("serviceProvider", serviceProvider)
                     put("paymentMethodType", "CREDIT_DEBIT_CARD")
                     put("sourceCurrencyCode", DemoConfig.SOURCE_CURRENCY)
                     put("sourceAmount", DemoConfig.SOURCE_AMOUNT)
@@ -100,7 +121,7 @@ class OrderService {
                     if (clientIP != null) put("clientIpAddress", clientIP)
                 },
             )
-            val (status, data) = post("/crypto/order/headless", body)
+            val (status, data) = post("/crypto/order/headless/onramp", body)
             if (status !in 200..299) { // headless order returns 201 Created
                 val info = runCatching { JSONObject(data) }.getOrNull()
                 val code = info?.optString("code")?.ifEmpty { null } ?: status.toString()

@@ -30,6 +30,11 @@ internal class WebViewHost(
     private val orderId: String?,
     private val handlers: MeldEventHandlers,
     allowedOrigins: Set<String> = emptySet(),
+    // When set, the WebView loads this HTML (via loadDataWithBaseURL, with [url] as the base/origin)
+    // instead of navigating to [url]. Used to run a provider's own web SDK inside the WebView — e.g.
+    // Uphold, whose widget must be mounted via PaymentWidget(session) rather than loaded as a page.
+    // The bootstrap must post lifecycle events through window.meldSendToNativeApp (the injected bridge).
+    private val htmlContent: String? = null,
     private val interpret: (Map<String, Any?>) -> List<MeldEvent>,
 ) : MeldProviderSession {
 
@@ -45,6 +50,14 @@ internal class WebViewHost(
     private var webView: WebView? = null
     private var didFireReady = false
     private var loadFailed = false
+
+    // Per-mount token handed only to the injected bridge script, which runs in trusted (allowlisted)
+    // frames. The origin-scoped WebMessageListener path enforces origin natively and doesn't need it, but
+    // the legacy addJavascriptInterface fallback exposes window.meld GLOBALLY with no native origin — so
+    // the native side gates on this token. A cross-origin 3DS/ACS frame that grabs the global interface
+    // directly never received the token (the script isn't injected into its origin) and is dropped, so it
+    // cannot forge lifecycle events (e.g. a capture 'complete' with an attacker card id).
+    private val bridgeToken = java.util.UUID.randomUUID().toString()
 
     @SuppressLint("SetJavaScriptEnabled")
     fun mount(host: ViewGroup) {
@@ -147,7 +160,13 @@ internal class WebViewHost(
         installBridge(web)
 
         host.addView(web)
-        web.loadUrl(url)
+        if (htmlContent != null) {
+            // [url] is the base URL: it sets the page origin so the origin-scoped bridge injects
+            // window.meld and so the provider SDK's iframe is same-origin with the widget host.
+            web.loadDataWithBaseURL(url, htmlContent, "text/html", "utf-8", null)
+        } else {
+            web.loadUrl(url)
+        }
         webView = web
     }
 
@@ -200,9 +219,11 @@ internal class WebViewHost(
             WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), originRules)
         } else {
             web.addJavascriptInterface(Bridge(), BRIDGE_NAME)
-            // No origin scoping available here, so inject everywhere and rely on the JS-level filter.
+            // window.meld is now global (all frames), so the interface can't trust its caller's origin.
+            // Inject the token-bearing script ONLY into allowlisted frames; a cross-origin frame therefore
+            // never gets the token and its direct calls are rejected in Bridge.postMessage below.
             if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-                WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), setOf("*"))
+                WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), originRules)
             }
         }
     }
@@ -210,11 +231,25 @@ internal class WebViewHost(
     private inner class Bridge {
         @JavascriptInterface
         fun postMessage(json: String) {
+            // This global interface has no native origin, so gate on the per-mount token that only the
+            // injected script (allowlisted frames) carries. A cross-origin frame calling window.meld
+            // directly lacks the token and is dropped — it can't forge lifecycle events.
+            if (!hasValidToken(json)) {
+                Log.d(TAG, "dropped bridge message with missing/invalid token (untrusted frame?)")
+                return
+            }
             // @JavascriptInterface methods arrive on a WebView background thread; hop to main so
             // all integrator callbacks are main-thread guaranteed.
             main.post { handleBridgeMessage(json) }
         }
     }
+
+    private fun hasValidToken(json: String): Boolean =
+        try {
+            JSONObject(json).optString("__token") == bridgeToken
+        } catch (e: JSONException) {
+            false
+        }
 
     private fun handleBridgeMessage(json: String) {
         // Each message arrives wrapped as { kind: "message", data: <provider event> }.
@@ -261,8 +296,9 @@ internal class WebViewHost(
         return """
         (function () {
           var allowedOrigins = $originsJson;
+          var token = "$bridgeToken";
           function send(message) {
-            try { window.$BRIDGE_NAME.postMessage(JSON.stringify(message)); }
+            try { window.$BRIDGE_NAME.postMessage(JSON.stringify(Object.assign({ __token: token }, message))); }
             catch (e) { if (window.console) console.warn('[MeldSDK] bridge post failed', e); }
           }
           // The widget calling this directly is trusted (same realm as our injected script).

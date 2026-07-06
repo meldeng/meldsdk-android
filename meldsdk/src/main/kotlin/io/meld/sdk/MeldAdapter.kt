@@ -39,8 +39,12 @@ internal interface MeldAdapter {
     /** What this adapter can do with a matching order. */
     val capabilities: MeldCapabilities
 
-    /** Whether this adapter handles the given order discriminators. */
-    fun matches(paymentMethodType: String?, renderMode: String?): Boolean
+    /**
+     * Whether this adapter handles the given order discriminators. [widgetUrl] lets an adapter
+     * distinguish providers that share a (paymentMethodType, renderMode) — e.g. two `IFRAME` card
+     * providers — by widget host.
+     */
+    fun matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?): Boolean
 
     /**
      * Render the order's widget into the host view, wiring its lifecycle to [handlers], and
