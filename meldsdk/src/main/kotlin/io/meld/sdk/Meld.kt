@@ -2,7 +2,6 @@ package io.meld.sdk
 
 import android.util.Log
 import android.view.ViewGroup
-import java.lang.ref.WeakReference
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -129,18 +128,21 @@ sealed class MeldMountException(message: String) : Exception(message) {
 }
 
 /**
- * Handle returned by [Meld.mount] — call [unmount] on teardown (navigation, dismissal). Holds the
- * session weakly: retain this handle (and keep the host view attached) until you unmount. Calling
- * [unmount] after teardown is a no-op.
+ * Handle returned by [Meld.mount] — call [unmount] on teardown (navigation, dismissal).
+ *
+ * The handle STRONGLY owns the provider session: it is the mounted widget's lifecycle owner, so the
+ * session must live exactly as long as the integrator keeps the handle. A weak reference would let a
+ * session that isn't itself retained by the view tree be garbage-collected right after [Meld.mount]
+ * returns — fatal for multi-step providers (e.g. Uphold), whose orchestrating session object owns the
+ * WebView(s) rather than being one. No leak: retain this handle until you [unmount]; calling [unmount]
+ * after teardown is a no-op.
  */
 class MeldWidgetHandle internal constructor(
     val mode: String,
-    session: MeldProviderSession,
+    private val session: MeldProviderSession,
 ) {
-    private val session = WeakReference(session)
-
     fun unmount() {
-        session.get()?.unmount()
+        session.unmount()
     }
 }
 
@@ -155,6 +157,9 @@ object Meld {
     // (paymentMethodType, renderMode); first match wins. Supporting a new provider is a new
     // entry here, never a change to the public API or the generic widget host.
     internal val adapters: List<MeldAdapter> = listOf(
+        // Provider-specific IFRAME adapters first (they host-gate on widgetUrl); the generic
+        // Mercuryo IFRAME-card adapter is the catch-all and must stay last.
+        UpholdCardAdapter(),
         MercuryoCardAdapter(),
     )
 
@@ -201,7 +206,8 @@ object Meld {
     /** First registered adapter that handles the order, or null if none do. */
     internal fun adapterFor(order: MeldOrder): MeldAdapter? {
         val mode = order.paymentMethodResponseDetails?.renderMode
-        return adapters.firstOrNull { it.matches(order.paymentMethodType, mode) }
+        val widgetUrl = order.paymentMethodResponseDetails?.serviceProviderWidgetUrl
+        return adapters.firstOrNull { it.matches(order.paymentMethodType, mode, widgetUrl) }
     }
 }
 

@@ -9,6 +9,8 @@ import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -112,15 +114,24 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
     var customerId by remember { mutableStateOf("") }
     var clientIP by remember { mutableStateOf<String?>(null) }
     var receiveText by remember { mutableStateOf("…") }
-    var quoteNote by remember { mutableStateOf("fetching live quote…") }
-    var rateText by remember { mutableStateOf("Credit / debit card rail") }
+    var quoteNote by remember { mutableStateOf("fetching live quotes…") }
     var errorText by remember { mutableStateOf("") }
     var creating by remember { mutableStateOf(false) }
+    val providers = remember { mutableStateListOf<DemoQuote>() }
+    var selectedProvider by remember { mutableStateOf<String?>(null) }
 
     val needsCustomerField = DemoConfig.meldCustomerId.isEmpty()
-    val buyDisabled = creating || wallet.isBlank()
+    val buyDisabled = creating || wallet.isBlank() || selectedProvider == null
 
-    // On appear: configure the SDK and fetch a live quote to display.
+    // Pick a provider: highlight it and update the headline receive amount + note.
+    fun select(quote: DemoQuote) {
+        selectedProvider = quote.serviceProvider
+        quote.destinationAmount?.let { receiveText = "≈ ${format(it)}" }
+        quoteNote = "via ${quote.serviceProvider}" +
+            (quote.totalFee?.let { " — total fees ${format(it)} ${DemoConfig.SOURCE_CURRENCY}" } ?: "")
+    }
+
+    // On appear: configure the SDK and fetch live quotes (one per provider) to choose from.
     LaunchedEffect(Unit) {
         Meld.configure(MeldEnvironment.SANDBOX) // SDK: one-time setup
         if (DemoConfig.meldApiKey.isEmpty()) {
@@ -131,10 +142,11 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
         }
         clientIP = orders.publicIP()
         try {
-            val quote = orders.quote()
-            quote.destinationAmount?.let { receiveText = "≈ ${format(it)}" }
-            quote.totalFee?.let { quoteNote = "live quote — total fees ${format(it)} ${DemoConfig.SOURCE_CURRENCY}" }
-            quote.exchangeRate?.let { rateText = "1 BTC ≈ ${it.toLong()} ${DemoConfig.SOURCE_CURRENCY}" }
+            val fetched = orders.quotes().sortedByDescending { it.destinationAmount ?: 0.0 }
+            providers.clear()
+            providers.addAll(fetched)
+            val best = fetched.firstOrNull()
+            if (best != null) select(best) else { receiveText = "≈ —"; quoteNote = "no providers for this corridor" }
         } catch (e: Exception) {
             receiveText = "≈ —"
             quoteNote = "quote failed: ${e.message}"
@@ -155,7 +167,12 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
                     errorText = "Set a Meld customer ID."
                     return@launch
                 }
-                val orderJSON = orders.createOrder(customer, wallet.trim(), clientIP)
+                val provider = selectedProvider
+                if (provider == null) {
+                    errorText = "Pick a provider."
+                    return@launch
+                }
+                val orderJSON = orders.createOrder(provider, customer, wallet.trim(), clientIP)
                 val order = MeldOrder.fromJson(orderJSON) // SDK: decode the order
                 if (!Meld.capabilities(order).embeddable) { // SDK: can we embed it?
                     errorText = "Order is not embeddable by this SDK (renderMode != IFRAME)."
@@ -181,10 +198,19 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Buy Bitcoin", color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("Buy ${DemoConfig.DESTINATION_CURRENCY}", color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
 
             AmountPanel("You pay", DemoConfig.SOURCE_AMOUNT, DemoConfig.SOURCE_CURRENCY)
-            AmountPanel("You receive", receiveText, "BTC", note = quoteNote, footer = "By ✦ Mercuryo — $rateText")
+            AmountPanel("You receive", receiveText, DemoConfig.DESTINATION_CURRENCY, note = quoteNote)
+
+            FieldLabel("Choose a provider")
+            if (providers.isEmpty()) {
+                Text(quoteNote, color = SubInk, fontSize = 14.sp)
+            } else {
+                providers.forEach { quote ->
+                    ProviderRow(quote, selected = quote.serviceProvider == selectedProvider) { select(quote) }
+                }
+            }
 
             FieldLabel("Wallet Address")
             DemoField(wallet, { wallet = it })
@@ -204,7 +230,11 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth().height(54.dp),
             ) {
-                Text(if (creating) "Creating order…" else "Buy Bitcoin", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(
+                    if (creating) "Creating order…" else "Buy ${DemoConfig.DESTINATION_CURRENCY}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                )
             }
 
             if (errorText.isNotEmpty()) {
@@ -234,6 +264,42 @@ private fun AmountPanel(label: String, amount: String, currency: String, note: S
 }
 
 @Composable
+private fun ProviderRow(quote: DemoQuote, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(if (selected) Color(0xFFEAF1EC) else Color(0xFFF7F6F2), RoundedCornerShape(12.dp))
+            .border(1.5.dp, if (selected) Green else Color(0xFFD8D7D1), RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(18.dp)
+                .border(2.dp, if (selected) Green else Color(0xFFB9B8B2), CircleShape)
+                .padding(4.dp)
+                .background(if (selected) Green else Color.Transparent, CircleShape),
+        )
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text(quote.serviceProvider, color = Ink, fontWeight = FontWeight.SemiBold)
+            quote.kycMode?.let { Text("KYC $it", color = SubInk, fontSize = 12.sp) }
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                "≈ ${quote.destinationAmount?.let { format(it) } ?: "—"} ${DemoConfig.DESTINATION_CURRENCY}",
+                color = Ink,
+                fontWeight = FontWeight.Bold,
+            )
+            quote.totalFee?.let {
+                Text("fee ${format(it)} ${DemoConfig.SOURCE_CURRENCY}", color = SubInk, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
 private fun FieldLabel(text: String) = Text(text, color = Ink, fontSize = 16.sp)
 
 @Composable
@@ -258,7 +324,7 @@ private fun WidgetScreen(order: MeldOrder, events: EventLogState, onClose: () ->
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onClose) { Text("Back", color = Color.White) }
-            Text("Mercuryo", color = Color.White, fontWeight = FontWeight.Bold)
+            Text("Checkout", color = Color.White, fontWeight = FontWeight.Bold)
         }
 
         // SDK: mount the order into a container view, passing your event handlers; unmount on dispose.
