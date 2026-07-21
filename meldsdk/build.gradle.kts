@@ -63,7 +63,9 @@ mavenPublishing {
         signAllPublications()
     }
 
-    coordinates("io.meld", "meldsdk", "0.1.1")
+    // Version is tag-driven in CI (see .github/workflows/release.yml, passes -PmeldsdkVersion=<tag>);
+    // the literal fallback is only for local publishToMavenLocal.
+    coordinates("io.meld", "meldsdk", (findProperty("meldsdkVersion") as String?) ?: "0.2.0")
 
     pom {
         name.set("MeldSDK")
