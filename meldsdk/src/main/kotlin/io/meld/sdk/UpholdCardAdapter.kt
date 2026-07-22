@@ -57,7 +57,9 @@ internal class UpholdCardAdapter : MeldAdapter {
         val bundle = loadBundle(host.context)
         warnIfEnvironmentMismatch(Uri.parse(sessionUrl).host)
 
-        val session = UpholdTwoStepSession(host, handlers, order.id, bundle, authorizeSessionUrl, continuationToken)
+        val session = UpholdTwoStepSession(
+            host, handlers, order.id, bundle, authorizeSessionUrl, continuationToken, order.paymentMethodType,
+        )
         session.mountCapture(sessionUrl, sessionToken, sessionFlow)
         return session
     }
@@ -70,7 +72,12 @@ internal class UpholdCardAdapter : MeldAdapter {
         private val bundle: String,
         private val authorizeSessionUrl: String,
         private val continuationToken: String?,
+        paymentMethodType: String?,
     ) : MeldProviderSession {
+
+        // Uphold widget `paymentMethods` config derived from the Meld order's paymentMethodType, so the
+        // widget preselects the method (skipping its "Select a payment method" screen) when we can map it.
+        private val paymentMethodsJs = upholdPaymentMethodsJs(paymentMethodType)
 
         private val main = Handler(Looper.getMainLooper())
 
@@ -103,7 +110,7 @@ internal class UpholdCardAdapter : MeldAdapter {
                 orderId = orderId,
                 handlers = onceHandlers,
                 allowedOrigins = allowedOrigins,
-                htmlContent = bootstrapHtml(bundle, sessionUrl, token, flow),
+                htmlContent = bootstrapHtml(bundle, sessionUrl, token, flow, paymentMethodsJs = paymentMethodsJs),
             ) { message ->
                 val cardId = extractCapturedCardId(message)
                 val type = (message["type"] ?: message["event"]) as? String
@@ -179,7 +186,7 @@ internal class UpholdCardAdapter : MeldAdapter {
                 orderId = orderId,
                 handlers = onceHandlers,
                 allowedOrigins = allowedOrigins,
-                htmlContent = bootstrapHtml(bundle, sessionUrl, token, flow, data),
+                htmlContent = bootstrapHtml(bundle, sessionUrl, token, flow, data, paymentMethodsJs),
             ) { message -> interpret(message, orderId) }
             current = authorize
             authorize.mount(host)
@@ -258,6 +265,16 @@ internal class UpholdCardAdapter : MeldAdapter {
         @Volatile
         private var cachedBundle: String? = null
 
+        // Map the Meld order's paymentMethodType to Uphold's widget `paymentMethods` config so the widget
+        // preselects it and skips the "Select a payment method" screen. Card-family Meld types map to
+        // Uphold's `card`; anything we can't confidently map falls back to the full picker (card + crypto).
+        @VisibleForTesting
+        internal fun upholdPaymentMethodsJs(paymentMethodType: String?): String =
+            when (paymentMethodType?.uppercase()) {
+                "CREDIT_DEBIT_CARD", "CREDIT_CARD", "DEBIT_CARD", "CARD" -> "[{type:'card'}]"
+                else -> "[{type:'card'},{type:'crypto'}]"
+            }
+
         // MARK: - Bootstrap that runs Uphold's web SDK inside the WebView
 
         /**
@@ -273,6 +290,7 @@ internal class UpholdCardAdapter : MeldAdapter {
             token: String,
             flow: String?,
             data: JSONObject? = null,
+            paymentMethodsJs: String = "[{type:'card'},{type:'crypto'}]",
         ): String {
             val session = JSONObject().put("url", sessionUrl).put("token", token)
             if (flow != null) session.put("flow", flow)
@@ -294,7 +312,7 @@ internal class UpholdCardAdapter : MeldAdapter {
                   try {
                     var W = window.MeldUpholdWidget && window.MeldUpholdWidget.PaymentWidget;
                     if(!W){ post({type:'error',detail:{error:{code:'sdk_unavailable',message:'Uphold widget SDK failed to load'}}}); return; }
-                    var widget = new W($session, { paymentMethods:[{type:'card'},{type:'crypto'}], theme:{appearance:'light'} });
+                    var widget = new W($session, { paymentMethods:$paymentMethodsJs, theme:{appearance:'light'} });
                     widget.on('ready', function(){ post({type:'ready'}); });
                     widget.on('complete', function(e){ post({type:'complete', value:(e&&e.detail)?e.detail.value:null}); });
                     widget.on('cancel', function(){ post({type:'cancel'}); });

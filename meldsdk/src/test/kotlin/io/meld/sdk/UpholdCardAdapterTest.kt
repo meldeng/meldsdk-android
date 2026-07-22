@@ -1,6 +1,7 @@
 package io.meld.sdk
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -114,5 +115,30 @@ class UpholdCardAdapterTest {
         )
         // A literal </script> inside the bundle must not prematurely close the tag.
         assertTrue(html.contains("<\\/script"))
+    }
+
+    @Test
+    fun upholdPaymentMethodsJs_cardTypesPreselectCard_othersFallBackToPicker() {
+        val cardOnly = "[{type:'card'}]"
+        val picker = "[{type:'card'},{type:'crypto'}]"
+        assertEquals(cardOnly, UpholdCardAdapter.upholdPaymentMethodsJs("CREDIT_DEBIT_CARD"))
+        assertEquals(cardOnly, UpholdCardAdapter.upholdPaymentMethodsJs("debit_card")) // case-insensitive
+        assertEquals(cardOnly, UpholdCardAdapter.upholdPaymentMethodsJs("CARD"))
+        assertEquals(picker, UpholdCardAdapter.upholdPaymentMethodsJs(null))
+        assertEquals(picker, UpholdCardAdapter.upholdPaymentMethodsJs("BANK_TRANSFER"))
+    }
+
+    @Test
+    fun bootstrapHtml_usesDerivedPaymentMethods_toPreselectCard() {
+        val html = UpholdCardAdapter.bootstrapHtml(
+            bundleJs = "var x=1;",
+            sessionUrl = "https://api.enterprise.sandbox.uphold.com/s",
+            token = "t",
+            flow = null,
+            paymentMethodsJs = "[{type:'card'}]",
+        )
+        // The widget is initialized with only card, so Uphold skips its "Select a payment method" screen.
+        assertTrue(html.contains("paymentMethods:[{type:'card'}]"))
+        assertFalse(html.contains("{type:'crypto'}"))
     }
 }
