@@ -27,6 +27,13 @@ enum class MeldEnvironment(val raw: String) {
 class MeldOrder private constructor(
     val id: String?,
     val paymentMethodType: String?,
+    /**
+     * `payload.serviceProvider` from the headless order response — the provider that will process this
+     * order (e.g. "BANXA", "MERCURYO"). Adapters are per-provider, so this is what the registry
+     * dispatches on for providers that render from an SDK token and so carry no widget host to
+     * identify them by.
+     */
+    val serviceProvider: String?,
     val paymentMethodResponseDetails: Details?,
 ) {
     class Details(
@@ -64,9 +71,15 @@ class MeldOrder private constructor(
                     raw = it,
                 )
             }
+            // The provider is echoed under `payload` on the headless create response. It is required
+            // on the request, so it is always present there — but read defensively, since the mid-flow
+            // authorize-session response (Uphold) is a different shape that carries no payload.
+            @Suppress("UNCHECKED_CAST")
+            val payload = dict["payload"] as? Map<String, Any?>
             return MeldOrder(
                 id = dict["id"] as? String,
                 paymentMethodType = dict["paymentMethodType"] as? String,
+                serviceProvider = payload?.get("serviceProvider") as? String,
                 paymentMethodResponseDetails = details,
             )
         }
@@ -160,6 +173,10 @@ object Meld {
         // Provider-specific IFRAME adapters first (they host-gate on widgetUrl); the generic
         // Mercuryo IFRAME-card adapter is the catch-all and must stay last.
         UpholdCardAdapter(),
+        // Banxa carries no widget URL at all (it renders from an SDK token), so it must come before
+        // the Mercuryo catch-all — which would otherwise claim the order and then fail on the missing
+        // serviceProviderWidgetUrl.
+        BanxaCardAdapter(),
         MercuryoCardAdapter(),
     )
 
@@ -205,9 +222,7 @@ object Meld {
 
     /** First registered adapter that handles the order, or null if none do. */
     internal fun adapterFor(order: MeldOrder): MeldAdapter? {
-        val mode = order.paymentMethodResponseDetails?.renderMode
-        val widgetUrl = order.paymentMethodResponseDetails?.serviceProviderWidgetUrl
-        return adapters.firstOrNull { it.matches(order.paymentMethodType, mode, widgetUrl) }
+        return adapters.firstOrNull { it.matches(order) }
     }
 }
 
