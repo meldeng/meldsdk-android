@@ -13,9 +13,11 @@ import io.meld.sdk.banxa.BanxaWebCheckoutPresenter
  * Rendering runs Banxa's own `<banxa-primer-checkout>` web component (which wraps Primer's Checkout
  * Web SDK) inside the reused [WebViewHost], the same shape as [UpholdCardAdapter]. That is Banxa's
  * documented order-first integration: the component takes only a client token, so no Banxa API
- * credential ever reaches the device. Banxa's *native* Android SDK is deliberately not used — it
- * creates its own order inside `startPayment`, which would bypass Meld's order lifecycle entirely
- * (no `headless_order` row, nothing for the webhook to correlate, quote and routing skipped).
+ * credential ever reaches the device. Banxa's *native* Android SDK is not yet integrated on Android —
+ * an availability gap, not a design rejection: iOS adopts it via `providerOrderCreation = CLIENT`
+ * (the backend persists the row first and links Banxa's order by externalOrderId), and the same
+ * adapter shape is the intended Android follow-up. Until then a CLIENT-created order (no
+ * sdkSessionToken) must NOT be claimed by this adapter — see [matches].
  */
 internal class BanxaCardAdapter(
     /**
@@ -51,7 +53,12 @@ internal class BanxaCardAdapter(
     override fun matches(order: MeldOrder): Boolean =
         order.serviceProvider == SERVICE_PROVIDER &&
             order.paymentMethodType == "CREDIT_DEBIT_CARD" &&
-            order.paymentMethodResponseDetails?.renderMode == "IFRAME"
+            order.paymentMethodResponseDetails?.renderMode == "IFRAME" &&
+            // A client-created (providerOrderCreation = CLIENT) order is also CREDIT_DEBIT_CARD but
+            // carries no sdkSessionToken — it is meant for Banxa's native SDK, which Android does not
+            // integrate yet. Claiming it here would fail with a "backend did not receive a token"
+            // diagnosis that points at Banxa provisioning instead of the truth: no adapter for it.
+            !(order.paymentMethodResponseDetails?.get("sdkSessionToken") as? String).isNullOrBlank()
 
     /**
      * Headless card: Primer's fields render in place from the order's client token

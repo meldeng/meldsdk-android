@@ -91,15 +91,20 @@ class BanxaCardAdapterTest {
     }
 
     @Test
-    fun banxa_order_without_a_token_still_dispatches_to_Banxa_and_then_fails_at_mount() {
-        // It must reach THIS adapter rather than the Mercuryo catch-all, so the error names the real
-        // cause (no Primer token / native payments not provisioned) instead of a missing widget URL.
-        // mount() itself needs a Context/WebView; the throw is covered on iOS.
-        val hostedOnly = order(
+    fun banxa_order_without_a_token_is_not_claimed() {
+        // A Banxa CREDIT_DEBIT_CARD order with no sdkSessionToken is a client-created
+        // (providerOrderCreation = CLIENT) order meant for Banxa's native SDK, which Android does not
+        // integrate yet. Claiming it here used to fail at mount with "the backend did not receive a
+        // token from Banxa" — a false diagnosis pointing at Banxa provisioning. Not matching lets it
+        // fall through to the truthful "no adapter for this order".
+        val tokenless = order(
             widgetUrl = "https://meld.banxa-sandbox.com/papi/transit/?initId=x",
             extra = emptyMap(),
         )
-        assertTrue(BanxaCardAdapter().matches(hostedOnly))
+        assertFalse(BanxaCardAdapter().matches(tokenless))
+        // (The un-gated Mercuryo CREDIT_DEBIT_CARD + IFRAME catch-all will still claim it — that is a
+        // pre-existing property of the registry, not this adapter's to fix; it at least fails on a
+        // missing widget URL rather than blaming Banxa provisioning.)
     }
 
     @Test

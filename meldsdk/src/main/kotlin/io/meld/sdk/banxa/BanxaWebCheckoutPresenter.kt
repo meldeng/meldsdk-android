@@ -15,8 +15,10 @@ import org.json.JSONArray
  * Presents Banxa's `<banxa-primer-checkout>` web component inside the shared [WebViewHost].
  *
  * The component takes a client token and nothing else, so no Banxa credential reaches the device and
- * the order stays Meld's. Banxa's own Android SDK is deliberately not used: it creates its own order,
- * which would bypass Meld's order lifecycle entirely.
+ * the order stays Meld's. Banxa's own Android SDK is not yet integrated here — not a rejection of it:
+ * the iOS SDK adopts Banxa's native SDK via `providerOrderCreation = CLIENT` (persist-first +
+ * externalOrderId linking answers the "it creates its own order" objection), and Android should follow
+ * the same shape when the Android SDK is wired in.
  *
  * Card only. A wallet sheet cannot be presented from here — a WebView wallet requires the page origin
  * to be one registered with the processor, and the bootstrap page's origin is Primer's, not ours to
@@ -137,14 +139,19 @@ internal class BanxaWebCheckoutPresenter : BanxaCheckoutPresenter {
                 if(!S || !S.registerBanxaPrimerCheckout){ post({type:'error',detail:{error:{code:'sdk_unavailable',message:'Banxa checkout SDK failed to load'}}}); return; }
                 S.registerBanxaPrimerCheckout();
                 var el = document.createElement('banxa-primer-checkout');
+                // Card only. The component's default preset also renders an Apple Pay button, which
+                // this WebView can never validate (its page origin is not a registered merchant
+                // domain) — the button would show, fail silently in the console, and confuse users.
+                el.setAttribute('payment-methods', 'PAYMENT_CARD');
                 [
                   'ready','payment-start','payment-success','payment-failure','payment-cancel','card-error'
                 ].forEach(function(name){
                   el.addEventListener('banxa:'+name, function(e){ post({type:name, detail:(e?e.detail:null)}); });
                 });
                 document.getElementById('meld-banxa').appendChild(el);
-                // Property, not attribute: the component reads clientToken as a property setter, and a
-                // token in the DOM would also be visible in any page inspection.
+                // Set as a property — but the component's setter reflects it to the `client-token`
+                // attribute, so the token is in this bootstrap page's DOM regardless. Acceptable here:
+                // the page is Meld's own vendored bundle inside the app's WebView, not an integrator page.
                 el.clientToken = $tokenJson[0];
               } catch(err){ post({type:'error',detail:{error:{code:'mount_failed',message:String((err&&err.message)||err)}}}); }
             })();
