@@ -47,6 +47,18 @@ internal interface MeldAdapter {
     fun matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?): Boolean
 
     /**
+     * Order-level match — what the registry dispatches on. Defaults to the three-discriminator
+     * [matches], so adapters identified by widget host (Mercuryo, Uphold) need not implement it.
+     * Adapters for providers that carry no widget URL — where the discriminator is a detail field
+     * such as `sdkSessionFlow` — override this instead of trying to infer the provider from a null URL.
+     */
+    fun matches(order: MeldOrder): Boolean = matches(
+        order.paymentMethodType,
+        order.paymentMethodResponseDetails?.renderMode,
+        order.paymentMethodResponseDetails?.serviceProviderWidgetUrl,
+    )
+
+    /**
      * Render the order's widget into the host view, wiring its lifecycle to [handlers], and
      * return a session to tear it down. Throws if the order lacks what this adapter needs.
      */

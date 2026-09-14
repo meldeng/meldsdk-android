@@ -338,13 +338,25 @@ internal class UpholdCardAdapter : MeldAdapter {
             }
         }
 
-        // Capture (select-for-deposit) step: surface ready so the widget shows, and terminal
-        // cancel/error to the integrator; the 'complete' (card captured) is handled out-of-band.
+        /**
+         * Capture (select-for-deposit) step: surface `ready` and `error` only. `complete` (card
+         * captured) is handled out-of-band to advance to authorize, and `cancel` is deliberately
+         * dropped.
+         *
+         * Uphold's capture widget posts a bare `cancel` whenever its own card dialog closes —
+         * observed after adding a card and after deleting one, neither of which is the customer
+         * abandoning the purchase. Forwarding it ended the Meld flow and tore the host's checkout
+         * down mid-card-management. The payload carries nothing to tell that apart from a real
+         * abandonment, so the distinction has to be positional: during capture the customer is
+         * managing cards and the surface stays up. A genuine exit is the host's own chrome to offer.
+         *
+         * [interpret] (authorize) is different and still forwards cancel — there, closing the widget
+         * really is declining to pay.
+         */
         @VisibleForTesting
         internal fun interpretCapture(providerMessage: Map<String, Any?>): List<MeldEvent> {
             return when ((providerMessage["type"] ?: providerMessage["event"]) as? String) {
                 "ready" -> listOf(MeldEvent.Ready)
-                "cancel" -> listOf(MeldEvent.Cancel)
                 "error" -> listOf(MeldEvent.Error(errorFrom(providerMessage, null)))
                 else -> emptyList()
             }
