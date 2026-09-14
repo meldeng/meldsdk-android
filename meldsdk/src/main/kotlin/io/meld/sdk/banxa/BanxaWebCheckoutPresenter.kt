@@ -43,6 +43,11 @@ internal class BanxaWebCheckoutPresenter : BanxaCheckoutPresenter {
             handlers = handlers,
             allowedOrigins = ALLOWED_ORIGINS,
             htmlContent = bootstrapHtml(bundle, theme, clientToken),
+            // The bootstrap is local HTML, so it finishes loading almost immediately — long before
+            // Primer has fetched its configuration. Letting that count as ready fired onReady on an
+            // empty frame and the one-shot latch then discarded the real banxa:ready, so an expired
+            // client token looked like a widget that was up and simply blank.
+            firesReadyOnNavigation = false,
         ) { message -> interpret(message, orderId) }
         session.mount(host)
         return session
