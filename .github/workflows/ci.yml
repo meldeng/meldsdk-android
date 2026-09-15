@@ -18,7 +18,14 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        # packages: '' because the action's default set includes `tools`, which Google removed from the
+        # SDK repository — sdkmanager then exits 1 with "Failed to find package 'tools'" and fails the
+        # job before any Gradle task runs. Nothing here needs `tools`: the Android Gradle plugin resolves
+        # the platform and build-tools it wants on its own. Unrelated to this PR's contents; main last
+        # built green in July 2026, before the package went away.
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Build release AAR
         run: ./gradlew :meldsdk:assembleRelease

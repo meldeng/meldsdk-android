@@ -35,6 +35,17 @@ internal class WebViewHost(
     // Uphold, whose widget must be mounted via PaymentWidget(session) rather than loaded as a page.
     // The bootstrap must post lifecycle events through window.meldSendToNativeApp (the injected bridge).
     private val htmlContent: String? = null,
+    // Whether finishing a main-frame navigation counts as "ready".
+    //
+    // True suits a provider page that IS the widget: once it has loaded, it is up. It is wrong for a
+    // bootstrap that mounts a provider SDK itself — the local HTML parses in milliseconds, long
+    // before that SDK has fetched its configuration, so ready fired on an empty frame and the
+    // one-shot latch then swallowed the provider's real ready event. An expired or rejected client
+    // token surfaced as a widget that reported ready and stayed blank.
+    //
+    // Set false for those and let the bootstrap say when it is ready. The iOS presenter passes the
+    // same flag for the same component; this is the Android half of it.
+    private val firesReadyOnNavigation: Boolean = true,
     private val interpret: (Map<String, Any?>) -> List<MeldEvent>,
 ) : MeldProviderSession {
 
@@ -83,8 +94,9 @@ internal class WebViewHost(
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 // Page loaded; a provider's own ready event (if any) also fires this — whichever
-                // first. fireReadyOnce() is suppressed if the main-frame load failed.
-                fireReadyOnce()
+                // first. fireReadyOnce() is suppressed if the main-frame load failed, and skipped
+                // entirely for a bootstrap that reports its own readiness (see the constructor).
+                if (firesReadyOnNavigation) fireReadyOnce()
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {

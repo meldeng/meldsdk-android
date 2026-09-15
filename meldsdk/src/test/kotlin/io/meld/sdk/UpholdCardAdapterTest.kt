@@ -75,9 +75,12 @@ class UpholdCardAdapterTest {
     }
 
     @Test
-    fun interpretCapture_surfacesReadyCancelError_butNotComplete() {
+    fun interpretCapture_surfacesReadyAndError_butNotCompleteOrCancel() {
         assertEquals(listOf(MeldEvent.Ready), UpholdCardAdapter.interpretCapture(mapOf("type" to "ready")))
-        assertEquals(listOf(MeldEvent.Cancel), UpholdCardAdapter.interpretCapture(mapOf("type" to "cancel")))
+        // A closed card dialog is not an abandoned checkout: Uphold's capture widget posts a bare
+        // `cancel` after adding or deleting a card, and forwarding it tore the host's checkout down
+        // mid-card-management. Authorize still forwards cancel — see interpret_* below.
+        assertTrue(UpholdCardAdapter.interpretCapture(mapOf("type" to "cancel")).isEmpty())
         assertTrue(UpholdCardAdapter.interpretCapture(mapOf("type" to "error"))[0] is MeldEvent.Error)
         // capture 'complete' is handled out-of-band (card id extraction), not surfaced here
         assertTrue(UpholdCardAdapter.interpretCapture(mapOf("type" to "complete")).isEmpty())
