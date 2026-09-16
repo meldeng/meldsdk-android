@@ -216,7 +216,9 @@ object Meld {
             )
         }
         // The adapter owns how its widget is rendered (URL in a WebView, provider SDK, …).
-        val session = adapter.mount(order, host, handlers)
+        // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
+        // handler directly — see TerminalGate.
+        val session = adapter.mount(order, host, handlers.gated())
         return MeldWidgetHandle(adapter.capabilities.surface, session)
     }
 
