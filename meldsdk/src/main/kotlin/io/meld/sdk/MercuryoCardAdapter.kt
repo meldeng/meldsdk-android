@@ -15,15 +15,18 @@ import androidx.annotation.VisibleForTesting
  *                              additionally -> Error, terminal `cancelled` -> Cancel
  */
 internal class MercuryoCardAdapter : MeldAdapter {
+    override val presentations = listOf(AdapterPresentation(
+        "CREDIT_DEBIT_CARD", MeldHeadlessPresentation("EMBEDDED_WIDGET", "MERCURYO_WIDGET", 1),
+    ))
+
     override val label = "Mercuryo card (CREDIT_DEBIT_CARD / IFRAME)"
     override val capabilities =
         MeldCapabilities(embeddable = true, surface = "embedded", requiresUserGesture = false)
 
-    // Generic IFRAME-card adapter: matches any CREDIT_DEBIT_CARD / IFRAME order. Provider-specific
-    // IFRAME adapters (e.g. Uphold) are registered ahead of this one and host-gate on widgetUrl, so
-    // only non-provider-specific IFRAME card orders fall through to Mercuryo.
+    // Legacy IFRAME-card selection requires a recognized Mercuryo widget origin.
     override fun matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?): Boolean =
-        paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME"
+        paymentMethodType == "CREDIT_DEBIT_CARD" && renderMode == "IFRAME" &&
+            isRegisteredWidgetUrl(widgetUrl, allowedOrigins)
 
     override fun mount(
         order: MeldOrder,
@@ -33,6 +36,9 @@ internal class MercuryoCardAdapter : MeldAdapter {
         val urlString = order.paymentMethodResponseDetails?.serviceProviderWidgetUrl
             ?: throw MeldMountException.MissingWidgetUrl
 
+        if (!isRegisteredWidgetUrl(urlString, allowedOrigins)) {
+            throw MeldMountException.Unsupported("Invalid widget origin for declared presentation.")
+        }
         warnIfEnvironmentMismatch(Uri.parse(urlString).host)
 
         val session = WebViewHost(

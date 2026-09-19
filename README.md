@@ -103,3 +103,35 @@ iOS and web demos). See [example/README.md](example/README.md) for credentials a
 ## License
 
 Proprietary. See [LICENSE](LICENSE).
+
+## Declared presentation support
+
+Orders and quotes may carry `headlessPresentation` (`surface`, `protocol`, `version`).
+`Meld.capabilities(order)` and `Meld.mount` select the same registered adapter by this
+contract. Unknown or malformed declarations are unsupported and never use legacy routing.
+For advisory support before creating an order:
+
+```kotlin
+val support = Meld.presentationCapabilities(
+    MeldHeadlessPresentation("EMBEDDED_WIDGET", "MERCURYO_WIDGET", 1),
+    "CREDIT_DEBIT_CARD",
+)
+```
+
+Use the actual quote descriptor; the values above are illustrative. This checks SDK support,
+not customer eligibility, device readiness or financial authorization. The registry currently
+supports version 1 `EMBEDDED_WIDGET` card protocols `MERCURYO_WIDGET`, `UPHOLD_WIDGET`, and
+`BANXA_CHECKOUT`. Provider identity does not select a declared protocol.
+
+Android does not support native Apple Pay sheets. This build declines wallet-token, Stripe
+native, hosted-link and vendor Apple Pay protocols. Do not create an order for an unsupported
+surface; offer an explicitly supported alternative before create. For an existing unsupported
+order, preserve its identity and request key rather than silently creating a replacement.
+
+Stored orders without the descriptor keep legacy adapters. Mercuryo/Uphold require registered
+HTTPS widget origins (no URL credentials or nonstandard ports); Banxa keeps its provider/token
+signature. Widget origin checks also apply when mounting a declared protocol. Arbitrary iframe
+orders no longer default to Mercuryo. Integrators must not strip metadata to force fallback.
+
+These APIs require a coordinated Android SDK release and wrapper adoption. No SDK artifact is
+published by this change. Browser/provider and physical-device acceptance remain separate gates.

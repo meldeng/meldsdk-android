@@ -55,9 +55,7 @@ class BanxaCardAdapterTest {
 
     @Test
     fun banxa_does_not_steal_a_mercuryo_order() {
-        // Asserted against Banxa's matcher rather than through Meld.adapterFor: UpholdCardAdapter is
-        // registered first and host-gates via android.net.Uri, which returns null under the plain-JVM
-        // unit-test stubs — so adapterFor cannot be exercised here for an order carrying a widget URL.
+        // Legacy signatures are independently testable with the pure JVM origin parser.
         val mercuryo = order(
             serviceProvider = "MERCURYO",
             widgetUrl = "https://exchange.mercuryo.io/?widget_id=x",
@@ -65,6 +63,7 @@ class BanxaCardAdapterTest {
         )
         assertFalse(BanxaCardAdapter().matches(mercuryo))
         assertTrue(MercuryoCardAdapter().matches(mercuryo))
+        assertTrue(Meld.adapterFor(mercuryo) is MercuryoCardAdapter)
     }
 
     @Test
@@ -81,13 +80,9 @@ class BanxaCardAdapterTest {
     }
 
     @Test
-    fun banxa_is_registered_ahead_of_the_mercuryo_catchAll() {
-        // Ordering is the whole reason a Banxa order reaches its own adapter; assert it directly so a
-        // future reshuffle of the registry fails here rather than at a customer's checkout.
-        val banxaIndex = Meld.adapters.indexOfFirst { it is BanxaCardAdapter }
-        val mercuryoIndex = Meld.adapters.indexOfFirst { it is MercuryoCardAdapter }
-        assertTrue("BanxaCardAdapter is not registered", banxaIndex >= 0)
-        assertTrue("BanxaCardAdapter must precede the Mercuryo catch-all", banxaIndex < mercuryoIndex)
+    fun banxa_legacy_dispatch_does_not_depend_on_registration_order() {
+        val registry = MeldAdapterRegistry(Meld.adapters.reversed())
+        assertTrue(registry.adapter(order()) is BanxaCardAdapter)
     }
 
     @Test

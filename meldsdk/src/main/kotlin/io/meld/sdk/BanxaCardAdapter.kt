@@ -25,6 +25,10 @@ internal class BanxaCardAdapter(
     internal val presenter: BanxaCheckoutPresenter = BanxaWebCheckoutPresenter(),
 ) : MeldAdapter {
 
+    override val presentations = listOf(AdapterPresentation(
+        "CREDIT_DEBIT_CARD", MeldHeadlessPresentation("EMBEDDED_WIDGET", "BANXA_CHECKOUT", 1),
+    ))
+
     override val label: String = "Banxa card (CREDIT_DEBIT_CARD / IFRAME, SDK token)"
 
     override val capabilities: MeldCapabilities get() = presenter.capabilities
@@ -37,7 +41,8 @@ internal class BanxaCardAdapter(
 
     /**
      * Banxa has no widget URL at all, so the three-discriminator [matches] cannot identify it — this
-     * adapter matches on the order and keys on the provider itself.
+     * legacy adapter matches on the order and keys on the provider itself. Declared protocols use
+     * [presentations] instead.
      *
      * Provider identity, not rendering technology: an earlier revision matched on
      * `sdkSessionFlow == "primer"`, which overloaded a field that means "which step of Uphold's
@@ -45,13 +50,9 @@ internal class BanxaCardAdapter(
      * Primer is an orchestrator several PSPs sit behind. [MeldOrder.serviceProvider] is the thing an
      * adapter is actually selected by.
      *
-     * Registry order still matters: [MercuryoCardAdapter] is an un-gated catch-all for
-     * CREDIT_DEBIT_CARD + IFRAME, so Banxa must be registered ahead of it.
-     *
      * Deliberately not also gated on the presence of `sdkSessionToken`. A Banxa order without one is
-     * still Banxa's, and declining it here does not leave it unclaimed — the Mercuryo catch-all takes
-     * it and fails on a missing `serviceProviderWidgetUrl`, which points the integrator at a widget
-     * Banxa never issues. Claiming it and failing in [mount] names the real fault instead.
+     * still Banxa's. Claiming it and failing in [mount] names the missing token instead of reporting
+     * an unknown adapter. Other legacy widget adapters require their own registered origins.
      */
     override fun matches(order: MeldOrder): Boolean =
         order.serviceProvider == SERVICE_PROVIDER &&

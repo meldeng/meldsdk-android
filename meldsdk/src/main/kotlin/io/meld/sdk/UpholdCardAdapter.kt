@@ -29,6 +29,10 @@ import org.json.JSONObject
  * `sdkSessionFlow`. Distinguished from other IFRAME card providers by widget/API host.
  */
 internal class UpholdCardAdapter : MeldAdapter {
+    override val presentations = listOf(AdapterPresentation(
+        "CREDIT_DEBIT_CARD", MeldHeadlessPresentation("EMBEDDED_WIDGET", "UPHOLD_WIDGET", 1),
+    ))
+
     override val label = "Uphold card (CREDIT_DEBIT_CARD / IFRAME)"
     override val capabilities =
         MeldCapabilities(embeddable = true, surface = "embedded", requiresUserGesture = false)
@@ -43,6 +47,9 @@ internal class UpholdCardAdapter : MeldAdapter {
     ): MeldProviderSession {
         val details = order.paymentMethodResponseDetails
         val sessionUrl = details?.serviceProviderWidgetUrl ?: throw MeldMountException.MissingWidgetUrl
+        if (!isUpholdHost(sessionUrl)) {
+            throw MeldMountException.Unsupported("Invalid widget origin for declared presentation.")
+        }
         val sessionToken = details["sdkSessionToken"] as? String
             ?: throw MeldMountException.Unsupported(
                 "Uphold card order is missing sdkSessionToken (needed to mount the Uphold widget SDK).",
@@ -412,13 +419,8 @@ internal class UpholdCardAdapter : MeldAdapter {
                 .map { "https://$it" }
                 .toSet()
 
-        private val allHosts: Set<String> =
-            (apiHostsByEnvironment.values.flatten() + widgetHostsByEnvironment.values.flatten()).toSet()
-
         @VisibleForTesting
-        internal fun isUpholdHost(widgetUrl: String?): Boolean {
-            if (widgetUrl.isNullOrEmpty()) return false
-            return Uri.parse(widgetUrl).host in allHosts
-        }
+        internal fun isUpholdHost(widgetUrl: String?): Boolean =
+            isRegisteredWidgetUrl(widgetUrl, allowedOrigins)
     }
 }

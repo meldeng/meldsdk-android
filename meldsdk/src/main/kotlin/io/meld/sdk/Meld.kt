@@ -11,7 +11,7 @@ import org.json.JSONObject
 //   Meld.capabilities(order)
 //   Meld.mount(order, host, handlers)
 //   handle.unmount()
-// The order's paymentMethodType and renderMode select the provider widget to embed, so
+// The order's declared protocol selects its adapter; legacy hints apply only if absent, so
 // supporting a new provider does not change this API. Supported today: Mercuryo card.
 
 enum class MeldEnvironment(val raw: String) {
@@ -30,12 +30,16 @@ class MeldOrder private constructor(
     /**
      * `payload.serviceProvider` from the headless order response — the provider that will process this
      * order (e.g. "BANXA", "MERCURYO"). Adapters are per-provider, so this is what the registry
-     * dispatches on for providers that render from an SDK token and so carry no widget host to
-     * identify them by.
+     * uses only for legacy token-backed responses without a protocol descriptor. Declared
+     * presentation dispatch does not depend on this identity.
      */
     val serviceProvider: String?,
     val paymentMethodResponseDetails: Details?,
+    internal val presentationDeclaration: PresentationDeclaration,
 ) {
+    val headlessPresentation: MeldHeadlessPresentation?
+        get() = (presentationDeclaration as? PresentationDeclaration.Declared)?.value
+
     class Details(
         val serviceProviderWidgetUrl: String?,
         val renderMode: String?,
@@ -81,6 +85,7 @@ class MeldOrder private constructor(
                 paymentMethodType = dict["paymentMethodType"] as? String,
                 serviceProvider = payload?.get("serviceProvider") as? String,
                 paymentMethodResponseDetails = details,
+                presentationDeclaration = PresentationDeclaration.decode(dict),
             )
         }
     }
@@ -167,18 +172,17 @@ object Meld {
         private set
 
     // Adapter registry — the only place provider knowledge lives. Dispatch is on
-    // (paymentMethodType, renderMode); first match wins. Supporting a new provider is a new
+    // declared method/surface/protocol/version; only absent declarations use legacy matches. A new
     // entry here, never a change to the public API or the generic widget host.
     internal val adapters: List<MeldAdapter> = listOf(
-        // Provider-specific IFRAME adapters first (they host-gate on widgetUrl); the generic
-        // Mercuryo IFRAME-card adapter is the catch-all and must stay last.
+        // Legacy IFRAME adapters each require a recognized widget origin.
         UpholdCardAdapter(),
-        // Banxa carries no widget URL at all (it renders from an SDK token), so it must come before
-        // the Mercuryo catch-all — which would otherwise claim the order and then fail on the missing
-        // serviceProviderWidgetUrl.
+        // Banxa carries no widget URL; its legacy signature uses the provider identity.
         BanxaCardAdapter(),
         MercuryoCardAdapter(),
     )
+
+    private val registry = MeldAdapterRegistry(adapters)
 
     @JvmStatic
     fun configure(environment: MeldEnvironment) {
@@ -191,6 +195,12 @@ object Meld {
     @JvmStatic
     fun capabilities(order: MeldOrder): MeldCapabilities =
         adapterFor(order)?.capabilities
+            ?: MeldCapabilities(embeddable = false, surface = "unsupported", requiresUserGesture = false)
+
+    /** Advisory pre-create discovery; eligibility and actual order validation still apply. */
+    @JvmStatic
+    fun presentationCapabilities(presentation: MeldHeadlessPresentation, paymentMethodType: String): MeldCapabilities =
+        registry.adapter(presentation, paymentMethodType)?.capabilities
             ?: MeldCapabilities(embeddable = false, surface = "unsupported", requiresUserGesture = false)
 
     /**
@@ -224,7 +234,7 @@ object Meld {
 
     /** First registered adapter that handles the order, or null if none do. */
     internal fun adapterFor(order: MeldOrder): MeldAdapter? {
-        return adapters.firstOrNull { it.matches(order) }
+        return registry.adapter(order)
     }
 }
 

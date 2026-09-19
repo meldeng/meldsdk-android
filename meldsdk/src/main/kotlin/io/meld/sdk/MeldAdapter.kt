@@ -36,6 +36,9 @@ internal interface MeldAdapter {
      */
     val label: String
 
+    /** Authoritative declarations; legacy matches apply only when no descriptor is present. */
+    val presentations: List<AdapterPresentation> get() = emptyList()
+
     /** What this adapter can do with a matching order. */
     val capabilities: MeldCapabilities
 
