@@ -117,8 +117,12 @@ data class MeldError(
     val message: String,
     /** Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be null. */
     val detail: String? = null,
+    /** Legacy presentation hint; never authorizes another financial request. */
     val recoverable: Boolean,
-)
+) {
+    // Outside the primary constructor to retain the existing constructor/copy/component ABI.
+    val headlessError: MeldHeadlessError = MeldHeadlessError()
+}
 
 /**
  * Lifecycle callbacks. Each callback receives the id of the order it relates to, so an app

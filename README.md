@@ -135,3 +135,15 @@ orders no longer default to Mercuryo. Integrators must not strip metadata to for
 
 These APIs require a coordinated Android SDK release and wrapper adoption. No SDK artifact is
 published by this change. Browser/provider and physical-device acceptance remain separate gates.
+
+
+### Shared error recovery
+
+Every Android `MeldError` exposes `headlessError` with version 1, category `OUTCOME_UNKNOWN`,
+recovery `READ_STATE`, and `automaticRetryAllowed: false`. The current Android adapters present
+widgets; their callback errors cannot establish a financial outcome or read-only retry semantics.
+Preserve the existing order and reconcile through your backend. The legacy `recoverable` flag
+is only a presentation hint and never authorizes a replacement order or automatic payment retry.
+
+This additive property preserves the existing constructor, copy and destructuring APIs. It uses
+the same recovery vocabulary as shared headless HTTP responses and the browser/iOS SDKs.

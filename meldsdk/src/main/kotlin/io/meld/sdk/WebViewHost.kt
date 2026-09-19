@@ -141,7 +141,7 @@ internal class WebViewHost(
                         code = "PROVIDER_LOAD_FAILED",
                         message = "Widget URL returned HTTP $status",
                         detail = "httpStatus #$status",
-                        recoverable = status >= 500, // 5xx may be transient; 4xx needs a new order
+                        recoverable = status >= 500, // Presentation hint only; reconcile the existing order.
                     )
                 }
             }
