@@ -56,7 +56,8 @@ class MeldOrderTest {
         val order = MeldOrder.fromMap(
             mapOf(
                 "paymentMethodType" to "CREDIT_DEBIT_CARD",
-                "paymentMethodResponseDetails" to mapOf("renderMode" to "IFRAME"),
+                "paymentMethodResponseDetails" to mapOf("renderMode" to "IFRAME",
+                    "serviceProviderWidgetUrl" to "https://sandbox-exchange.mrcr.io/"),
             ),
         )
         val caps = Meld.capabilities(order)
