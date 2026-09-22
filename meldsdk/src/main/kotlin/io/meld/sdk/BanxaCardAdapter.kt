@@ -26,7 +26,7 @@ internal class BanxaCardAdapter(
 ) : MeldAdapter {
 
     override val presentations = listOf(AdapterPresentation(
-        "CREDIT_DEBIT_CARD", MeldHeadlessPresentation("EMBEDDED_WIDGET", "BANXA_CHECKOUT", 1),
+        "CREDIT_DEBIT_CARD", MeldHeadlessPresentation("VENDOR_SDK", "BANXA_CHECKOUT", 1),
     ))
 
     override val label: String = "Banxa card (CREDIT_DEBIT_CARD / IFRAME, SDK token)"

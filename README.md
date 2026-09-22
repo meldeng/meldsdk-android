@@ -120,8 +120,9 @@ val support = Meld.presentationCapabilities(
 
 Use the actual quote descriptor; the values above are illustrative. This checks SDK support,
 not customer eligibility, device readiness or financial authorization. The registry currently
-supports version 1 `EMBEDDED_WIDGET` card protocols `MERCURYO_WIDGET`, `UPHOLD_WIDGET`, and
-`BANXA_CHECKOUT`. Provider identity does not select a declared protocol.
+supports version 1 card protocols `MERCURYO_WIDGET` and `UPHOLD_WIDGET` on `EMBEDDED_WIDGET`, and
+`BANXA_CHECKOUT` on `VENDOR_SDK` — Banxa's card form is presented by Banxa's own SDK, and `surface`
+names what the provider exposes. Provider identity does not select a declared protocol.
 
 Android does not support native Apple Pay sheets. This build declines wallet-token, Stripe
 native, hosted-link and vendor Apple Pay protocols. Do not create an order for an unsupported
