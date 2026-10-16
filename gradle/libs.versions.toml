@@ -1,7 +1,7 @@
 [versions]
 agp = "8.7.3"
 kotlin = "2.0.21"
-androidx-webkit = "1.12.1"
+androidx-webkit = "1.14.0"
 androidx-annotation = "1.9.1"
 androidx-core = "1.13.1"
 androidx-activity = "1.9.3"

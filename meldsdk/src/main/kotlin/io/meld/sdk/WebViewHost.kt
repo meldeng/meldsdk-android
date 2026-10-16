@@ -10,16 +10,19 @@ import android.util.Log
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONException
 import org.json.JSONObject
+import org.json.JSONTokener
 
 // Generic WebView host: loads a URL in a WebView, forwards the page's window messages to native,
 // maps each through the supplied `interpret` lambda, and dispatches the resulting events to the
@@ -46,6 +49,13 @@ internal class WebViewHost(
     // Set false for those and let the bootstrap say when it is ready. The iOS presenter passes the
     // same flag for the same component; this is the Android half of it.
     private val firesReadyOnNavigation: Boolean = true,
+    // window.<name>.postMessage objects a page posts to directly; each body reaches interpret as {channel, body}.
+    private val nativeMessageChannels: Set<String> = emptySet(),
+    // Non-empty pins main-frame navigation to these https hosts, denies popups, and gates evaluateJavascript.
+    private val mainFrameHosts: Set<String> = emptySet(),
+    private val paymentRequestEnabled: Boolean = false,
+    // Null keeps the platform default, which kills the app when the renderer goes.
+    private val onRenderProcessGone: (() -> Unit)? = null,
     private val interpret: (Map<String, Any?>) -> List<MeldEvent>,
 ) : MeldProviderSession {
 
@@ -86,12 +96,32 @@ internal class WebViewHost(
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false // let the widget use the camera (KYC)
         }
+        // With multiple windows on, the default onCreateWindow denies every popup.
+        if (mainFrameHosts.isNotEmpty()) web.settings.setSupportMultipleWindows(true)
+        if (paymentRequestEnabled) enablePaymentRequest(web)
         web.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
 
         web.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                if (mainFrameHosts.isEmpty() || request?.isForMainFrame != true) {
+                    return super.shouldOverrideUrlLoading(view, request)
+                }
+                if (isPinnedMainFrameUrl(request.url?.toString(), mainFrameHosts)) return false
+                Log.w(TAG, "blocked a main-frame navigation off the pinned hosts")
+                return true
+            }
+
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                val report = onRenderProcessGone ?: return super.onRenderProcessGone(view, detail)
+                Log.w(TAG, "the page's renderer is gone; destroying its WebView")
+                unmount()
+                report()
+                return true
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 // Page loaded; a provider's own ready event (if any) also fires this — whichever
                 // first. fireReadyOnce() is suppressed if the main-frame load failed, and skipped
@@ -170,6 +200,7 @@ internal class WebViewHost(
         }
 
         installBridge(web)
+        installNativeMessageChannels(web)
 
         host.addView(web)
         if (htmlContent != null) {
@@ -197,6 +228,25 @@ internal class WebViewHost(
         (web.parent as? ViewGroup)?.removeView(web)
         web.destroy()
         webView = null
+    }
+
+    /** Runs [script] only on a pinned https main frame; [callback] gets its string result, else null. */
+    fun evaluateJavascript(script: String, callback: (String?) -> Unit) {
+        val web = webView
+        if (web == null || !isPinnedMainFrameUrl(web.url, mainFrameHosts)) {
+            Log.w(TAG, "refused to evaluate a script: the page is not on a pinned host")
+            callback(null)
+            return
+        }
+        web.evaluateJavascript(script) { result -> callback(scriptStringResult(result)) }
+    }
+
+    private fun enablePaymentRequest(web: WebView) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.PAYMENT_REQUEST)) {
+            WebSettingsCompat.setPaymentRequestEnabled(web.settings, true)
+        } else {
+            Log.w(TAG, "this WebView has no Payment Request support; the page cannot open a payment sheet")
+        }
     }
 
     private fun fireReadyOnce() {
@@ -237,6 +287,21 @@ internal class WebViewHost(
             if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 WebViewCompat.addDocumentStartJavaScript(web, bridgeScript(), originRules)
             }
+        }
+    }
+
+    private fun installNativeMessageChannels(web: WebView) {
+        if (nativeMessageChannels.isEmpty()) return
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && allowedOrigins.isNotEmpty()) {
+            for (channel in nativeMessageChannels) {
+                WebViewCompat.addWebMessageListener(web, channel, allowedOrigins) { _, message, _, _, _ ->
+                    message.data?.let { body ->
+                        main.post { interpret(mapOf("channel" to channel, "body" to body)).forEach(::dispatch) }
+                    }
+                }
+            }
+        } else {
+            Log.w(TAG, "native message channels need WebMessageListener and an origin; none installed")
         }
     }
 
@@ -331,6 +396,14 @@ internal class WebViewHost(
             get() = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
     }
 }
+
+/** The string an evaluated script returned, decoded from WebView's JSON encoding; null for any other value. */
+internal fun scriptStringResult(json: String?): String? =
+    try {
+        json?.takeIf { it.startsWith("\"") }?.let { JSONTokener(it).nextValue() as? String }
+    } catch (_: JSONException) {
+        null
+    }
 
 /** Scheme + host of a URL as a postMessage origin string ("https://widget.mercuryo.io"). */
 internal fun originOf(url: String): String? {

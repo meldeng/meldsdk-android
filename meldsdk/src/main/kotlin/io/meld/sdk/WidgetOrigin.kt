@@ -13,3 +13,6 @@ internal fun isRegisteredWidgetUrl(value: String?, origins: Set<String>): Boolea
         false
     }
 }
+
+internal fun isPinnedMainFrameUrl(value: String?, hosts: Set<String>): Boolean =
+    isRegisteredWidgetUrl(value, hosts.mapTo(HashSet()) { "https://$it" })
