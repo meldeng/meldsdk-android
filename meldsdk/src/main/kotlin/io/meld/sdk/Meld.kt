@@ -118,7 +118,10 @@ data class MeldError(
     /** Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be null. */
     val detail: String? = null,
     val recoverable: Boolean,
-)
+) {
+    /** Whether a payment attempt may exist for this order. See [MeldErrorCode.attemptMayExist]. */
+    val attemptMayExist: Boolean get() = MeldErrorCode.attemptMayExist(code)
+}
 
 /**
  * Lifecycle callbacks. Each callback receives the id of the order it relates to, so an app
@@ -130,7 +133,10 @@ class MeldEventHandlers(
     val onStatusChange: ((MeldStatusChange) -> Unit)? = null,
     val onCancel: ((orderId: String?) -> Unit)? = null,
     val onError: ((MeldError) -> Unit)? = null,
-)
+) {
+    /** Set by the terminal gate; an adapter calls it when its session ends without a terminal callback. */
+    internal var sessionEnded: ((orderId: String?) -> Unit)? = null
+}
 
 data class MeldCapabilities(
     val embeddable: Boolean,
@@ -158,8 +164,10 @@ sealed class MeldMountException(message: String) : Exception(message) {
 class MeldWidgetHandle internal constructor(
     val mode: String,
     private val session: MeldProviderSession,
+    private val gate: TerminalGate,
 ) {
     fun unmount() {
+        gate.release()
         session.unmount()
     }
 }
@@ -228,8 +236,9 @@ object Meld {
         // The adapter owns how its widget is rendered (URL in a WebView, provider SDK, …).
         // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
         // handler directly — see TerminalGate.
-        val session = adapter.mount(order, host, handlers.gated())
-        return MeldWidgetHandle(adapter.capabilities.surface, session)
+        val gate = TerminalGate()
+        val session = adapter.mount(order, host, handlers.gated(gate))
+        return MeldWidgetHandle(adapter.capabilities.surface, session, gate)
     }
 
     /** First registered adapter that handles the order, or null if none do. */

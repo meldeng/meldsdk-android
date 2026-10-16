@@ -57,15 +57,23 @@ All callbacks are invoked on the main thread.
 |---|---|---|
 | `onReady` | Widget document loaded | Hide spinner |
 | `onPaymentSubmitted` | User finished the provider payment flow — **exactly once per mount** (UX hint only) | Unmount, show "processing" |
-| `onStatusChange` | Order status changed; `e.status` is `PENDING` \| `COMPLETED` \| `FAILED` \| `CANCELLED` | React to status; `COMPLETED` = provider "order complete" (still not settlement) |
+| `onStatusChange` | Order status changed; `e.status` is `PENDING` \| `COMPLETED` \| `FAILED` \| `CANCELLED` | React to status; `COMPLETED` = provider "order complete" (still not settlement). Dropped after the terminal callback, so a `COMPLETED` after `onPaymentSubmitted` never arrives |
 | `onCancel` | User cancelled | Show retry CTA |
 | `onError` | Load failure, bad order, or terminal `FAILED` status | Show error; `e.recoverable` says retry vs. new order |
 
-`onPaymentSubmitted` fires once and only once, however the provider signals it. Some send a
-"payment finished" message and never a status; some report `COMPLETED` and never a finished
-message; some send both, in either order. The SDK collapses that into a single callback, so you
-do not need a `settledOnce` guard of your own. A terminal `FAILED`/`CANCELLED` status, a cancel,
-or a non-recoverable error closes it, so a failure is never followed by a submission.
+Each mount delivers exactly one terminal callback — `onPaymentSubmitted`, `onCancel` or a
+non-recoverable `onError` — and drops every callback after it. `onPaymentSubmitted` fires once and
+only once, however the provider signals it. Some send a "payment finished" message and never a
+status; some report `COMPLETED` and never a finished message; some send both, in either order. The
+SDK collapses that into a single callback, so you do not need a `settledOnce` guard of your own. A
+`FAILED`/`CANCELLED` status blocks the submission, so a failure is never followed by one. A session
+that ends without a terminal callback, while you still hold the handle, reports `onError` with
+`PAYMENT_OUTCOME_UNKNOWN`, or `PAYMENT_REJECTED` after a `FAILED` status.
+
+`MeldErrorCode` names the normalized error codes. `e.attemptMayExist` is false only for codes that
+say no payment attempt exists (`PAYMENT_METHOD_UNAVAILABLE`, `PRESENTATION_FAILED`,
+`PAYMENT_REJECTED`, `ORDER_STATE_CHANGED`). When it is true — `PAYMENT_OUTCOME_UNKNOWN`, or any code
+this build does not know — track the existing order and never pay it again.
 
 `status` is normalized across providers — code against it, not the raw provider string (in
 `e.providerStatus`). A terminal `FAILED` also fires `onError`, and a `CANCELLED` also fires
