@@ -32,4 +32,13 @@ enum class MeldErrorCode(val raw: String, val attemptMayExist: Boolean) {
 internal object MeldErrorMessage {
     const val PAYMENT_REJECTED = "This payment was declined. Some banks block crypto purchases on credit cards, " +
         "so try a debit card or another payment method."
+    const val PAYMENT_OUTCOME_UNKNOWN =
+        "The payment outcome is not known yet. Track the existing order without paying again."
+
+    /** The shared copy for [code], or null when the adapter's own message says more. */
+    fun standard(code: MeldErrorCode): String? = when (code) {
+        MeldErrorCode.PAYMENT_REJECTED -> PAYMENT_REJECTED
+        MeldErrorCode.PAYMENT_OUTCOME_UNKNOWN -> PAYMENT_OUTCOME_UNKNOWN
+        else -> null
+    }
 }

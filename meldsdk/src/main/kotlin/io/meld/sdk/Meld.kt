@@ -2,6 +2,7 @@ package io.meld.sdk
 
 import android.util.Log
 import android.view.ViewGroup
+import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -149,6 +150,11 @@ sealed class MeldMountException(message: String) : Exception(message) {
     class Unsupported(detail: String) : MeldMountException(detail)
     object MissingWidgetUrl :
         MeldMountException("Order has no paymentMethodResponseDetails.serviceProviderWidgetUrl to load.")
+
+    /** The SDK presents this order's payment UI itself, but the host is not in an Activity on screen. */
+    object PresentationUnavailable : MeldMountException(
+        "No Activity on screen can present this payment. Mount on the main thread from a visible screen.",
+    )
 }
 
 /**
@@ -188,6 +194,7 @@ object Meld {
         // Banxa carries no widget URL; its legacy signature uses the provider identity.
         BanxaCardAdapter(),
         MercuryoCardAdapter(),
+        HostedWalletLinkAdapter(),
     )
 
     private val registry = MeldAdapterRegistry(adapters)
@@ -230,7 +237,7 @@ object Meld {
             throw MeldMountException.Unsupported(
                 "No embeddable adapter for paymentMethodType=$type renderMode=$mode. " +
                     "This SDK supports: $supported. " +
-                    "Guard with Meld.capabilities(order).embeddable before mount.",
+                    "Guard with Meld.capabilities(order).surface != \"unsupported\" before mount.",
             )
         }
         // The adapter owns how its widget is rendered (URL in a WebView, provider SDK, …).

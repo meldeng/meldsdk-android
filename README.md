@@ -31,7 +31,7 @@ Meld.configure(MeldEnvironment.SANDBOX)
 val order = MeldOrder.fromJson(backendOrderJson) // POST /crypto/order/headless, passed through
 
 // Guard before mounting.
-if (Meld.capabilities(order).embeddable) {
+if (Meld.capabilities(order).surface != "unsupported") {
     val handle = Meld.mount(
         order,
         host, // a ViewGroup you own
@@ -48,6 +48,9 @@ if (Meld.capabilities(order).embeddable) {
     handle.unmount()
 }
 ```
+
+`embeddable` only indicates whether a visible host is needed; native sheets can be supported with
+`embeddable == false`.
 
 All callbacks are invoked on the main thread.
 
@@ -130,12 +133,13 @@ Use the actual quote descriptor; the values above are illustrative. This checks 
 not customer eligibility, device readiness or financial authorization. The registry currently
 supports version 1 card protocols `MERCURYO_WIDGET` and `UPHOLD_WIDGET` on `EMBEDDED_WIDGET`, and
 `BANXA_CHECKOUT` on `VENDOR_SDK` — Banxa's card form is presented by Banxa's own SDK, and `surface`
-names what the provider exposes. Provider identity does not select a declared protocol.
+names what the provider exposes — plus `GOOGLE_PAY` on `PROVIDER_HOSTED` with
+`COINBASE_PAYMENT_LINK`. Provider identity does not select a declared protocol.
 
-Android does not support native Apple Pay sheets. This build declines wallet-token, Stripe
-native, hosted-link and vendor Apple Pay protocols. Do not create an order for an unsupported
-surface; offer an explicitly supported alternative before create. For an existing unsupported
-order, preserve its identity and request key rather than silently creating a replacement.
+Apple Pay is not presented on Android; every Apple Pay protocol is declined. Do not create an
+order for an unsupported surface; offer an explicitly supported alternative before create. For an
+existing unsupported order, preserve its identity and request key rather than silently creating a
+replacement.
 
 Stored orders without the descriptor keep legacy adapters. Mercuryo/Uphold require registered
 HTTPS widget origins (no URL credentials or nonstandard ports); Banxa keeps its provider/token
@@ -144,3 +148,32 @@ orders no longer default to Mercuryo. Integrators must not strip metadata to for
 
 These APIs require a coordinated Android SDK release and wrapper adoption. No SDK artifact is
 published by this change. Browser/provider and physical-device acceptance remain separate gates.
+
+## Provider-hosted wallets (Google Pay)
+
+Some providers present a wallet from their own payment link. The SDK loads that page out of sight,
+presses its pay button once, and the customer sees only the wallet's own sheet. Such an order
+reports `embeddable = false`, `surface = "native-wallet"` and `requiresUserGesture = true`:
+
+- **Mount from the customer's tap** on your own pay button. `host` only locates the Activity and
+  nothing is drawn into it, but the payment ends if it leaves its window, so pass a view that stays
+  on screen. Hold the handle until a terminal callback.
+- **`onReady`** means the sheet was requested. A wallet this device or customer cannot pay with
+  reports `onError` with `PAYMENT_METHOD_UNAVAILABLE` (no attempt exists; offer another method).
+  Once the sheet may be up, an interrupted session reports `PAYMENT_OUTCOME_UNKNOWN`: track the
+  order and never pay it again.
+- Unmounting after `onPaymentSubmitted` keeps the page alive for up to 60 seconds so the provider
+  can finish confirming. Settlement is still the webhook.
+
+`native-wallet` names no payment method. iOS reports its Apple Pay sheets as `native-applepay`, so
+guard on `surface != "unsupported"` rather than on either value.
+
+Device and app requirements, which the SDK cannot meet for you:
+
+- Android System WebView 137 or later and Google Play services 25.18.30 or later. On a WebView
+  without Payment Request support, `Meld.capabilities` reports `unsupported`.
+- Your app must be approved for Google Pay in the Google Pay & Wallet Console and published on
+  Google Play before Google Pay works in production.
+- Do not intercept the WebView's requests with your own HTTP client. The SDK's manifest adds the
+  `org.chromium.intent.action.PAY`, `IS_READY_TO_PAY` and `UPDATE_PAYMENT_DETAILS` package queries
+  to your app.

@@ -20,6 +20,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import io.meld.sdk.hosted.HostedPage
 import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -57,7 +58,7 @@ internal class WebViewHost(
     // Null keeps the platform default, which kills the app when the renderer goes.
     private val onRenderProcessGone: (() -> Unit)? = null,
     private val interpret: (Map<String, Any?>) -> List<MeldEvent>,
-) : MeldProviderSession {
+) : MeldProviderSession, HostedPage {
 
     // Origins ("https://host") whose window.postMessage events the bridge trusts. The widget's own
     // origin is always included; an adapter may add the provider's other origins. An empty set
@@ -81,7 +82,7 @@ internal class WebViewHost(
     private val bridgeToken = java.util.UUID.randomUUID().toString()
 
     @SuppressLint("SetJavaScriptEnabled")
-    fun mount(host: ViewGroup) {
+    override fun mount(host: ViewGroup) {
         // A WebViewHost owns exactly one WebView. Re-mounting (e.g. a second Meld.mount into a
         // reused host) tears the previous one down first so the old bridge can't leak or stack a
         // second WebView on top.
@@ -231,7 +232,7 @@ internal class WebViewHost(
     }
 
     /** Runs [script] only on a pinned https main frame; [callback] gets its string result, else null. */
-    fun evaluateJavascript(script: String, callback: (String?) -> Unit) {
+    override fun evaluateJavascript(script: String, callback: (String?) -> Unit) {
         val web = webView
         if (web == null || !isPinnedMainFrameUrl(web.url, mainFrameHosts)) {
             Log.w(TAG, "refused to evaluate a script: the page is not on a pinned host")
