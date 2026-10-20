@@ -3,6 +3,9 @@
 A minimal, runnable demo of MeldSDK (same flow as the iOS and web demos): a styled checkout card,
 a live quote, then the Mercuryo widget with a status banner + event log underneath.
 
+Pick **Google Pay** to create a `GOOGLE_PAY` order instead. The SDK then presents only the wallet's
+own sheet, on a device and app that meet the Google Pay requirements in the SDK README.
+
 Where to look:
 - `MainActivity.kt` — `CheckoutScreen` (the SDK touchpoints: `configure` / `capabilities`) and
   `WidgetScreen` (the actual integration: `Meld.mount(...)` + event handling).

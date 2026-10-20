@@ -119,6 +119,7 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
     var creating by remember { mutableStateOf(false) }
     val providers = remember { mutableStateListOf<DemoQuote>() }
     var selectedProvider by remember { mutableStateOf<String?>(null) }
+    var paymentMethod by remember { mutableStateOf(PaymentMethods.first()) }
 
     val needsCustomerField = DemoConfig.meldCustomerId.isEmpty()
     val buyDisabled = creating || wallet.isBlank() || selectedProvider == null
@@ -131,9 +132,11 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
             (quote.totalFee?.let { " — total fees ${format(it)} ${DemoConfig.SOURCE_CURRENCY}" } ?: "")
     }
 
-    // On appear: configure the SDK and fetch live quotes (one per provider) to choose from.
-    LaunchedEffect(Unit) {
+    // On appear and per payment method: configure the SDK and fetch live quotes (one per provider) to choose from.
+    LaunchedEffect(paymentMethod) {
         Meld.configure(MeldEnvironment.SANDBOX) // SDK: one-time setup
+        providers.clear()
+        selectedProvider = null
         if (DemoConfig.meldApiKey.isEmpty()) {
             receiveText = "≈ —"
             quoteNote = "MELD_API_KEY not set"
@@ -142,7 +145,7 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
         }
         clientIP = orders.publicIP()
         try {
-            val fetched = orders.quotes().sortedByDescending { it.destinationAmount ?: 0.0 }
+            val fetched = orders.quotes(paymentMethod.type).sortedByDescending { it.destinationAmount ?: 0.0 }
             providers.clear()
             providers.addAll(fetched)
             val best = fetched.firstOrNull()
@@ -172,10 +175,12 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
                     errorText = "Pick a provider."
                     return@launch
                 }
-                val orderJSON = orders.createOrder(provider, customer, wallet.trim(), clientIP)
+                val orderJSON = orders.createOrder(provider, paymentMethod.type, customer, wallet.trim(), clientIP)
                 val order = MeldOrder.fromJson(orderJSON) // SDK: decode the order
-                if (!Meld.capabilities(order).embeddable) { // SDK: can we embed it?
-                    errorText = "Order is not embeddable by this SDK (renderMode != IFRAME)."
+                // SDK: can this build present it? Embedded widgets render in the screen below; a wallet the
+                // SDK presents itself (embeddable = false) shows only its own sheet, mounted from this tap.
+                if (Meld.capabilities(order).surface == "unsupported") {
+                    errorText = "This SDK build cannot present the order on this device."
                     return@launch
                 }
                 events.clear()
@@ -219,9 +224,9 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
                 DemoField(customerId, { customerId = it }, placeholder = "customer with APPROVED KYC")
             }
             FieldLabel("Payment Method")
-            Box(
-                Modifier.fillMaxWidth().background(Color(0xFFF7F6F2), RoundedCornerShape(12.dp)).padding(14.dp),
-            ) { Text("Credit or debit card", color = Ink) }
+            PaymentMethods.forEach { method ->
+                ChoiceRow(method.label, selected = method == paymentMethod) { paymentMethod = method }
+            }
 
             Button(
                 onClick = { buy() },
@@ -298,6 +303,26 @@ private fun ProviderRow(quote: DemoQuote, selected: Boolean, onClick: () -> Unit
         }
     }
 }
+
+@Composable
+private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(if (selected) Color(0xFFEAF1EC) else Color(0xFFF7F6F2), RoundedCornerShape(12.dp))
+            .border(1.5.dp, if (selected) Green else Color(0xFFD8D7D1), RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(14.dp),
+    ) { Text(label, color = Ink, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal) }
+}
+
+private data class PaymentMethod(val type: String, val label: String)
+
+// Catalog ids, passed through to quote and order creation as-is.
+private val PaymentMethods = listOf(
+    PaymentMethod("CREDIT_DEBIT_CARD", "Credit or debit card"),
+    PaymentMethod("GOOGLE_PAY", "Google Pay"),
+)
 
 @Composable
 private fun FieldLabel(text: String) = Text(text, color = Ink, fontSize = 16.sp)

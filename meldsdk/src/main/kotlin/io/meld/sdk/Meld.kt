@@ -2,6 +2,7 @@ package io.meld.sdk
 
 import android.util.Log
 import android.view.ViewGroup
+import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -118,7 +119,10 @@ data class MeldError(
     /** Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be null. */
     val detail: String? = null,
     val recoverable: Boolean,
-)
+) {
+    /** Whether a payment attempt may exist for this order. See [MeldErrorCode.attemptMayExist]. */
+    val attemptMayExist: Boolean get() = MeldErrorCode.attemptMayExist(code)
+}
 
 /**
  * Lifecycle callbacks. Each callback receives the id of the order it relates to, so an app
@@ -130,7 +134,10 @@ class MeldEventHandlers(
     val onStatusChange: ((MeldStatusChange) -> Unit)? = null,
     val onCancel: ((orderId: String?) -> Unit)? = null,
     val onError: ((MeldError) -> Unit)? = null,
-)
+) {
+    /** Set by the terminal gate; an adapter calls it when its session ends without a terminal callback. */
+    internal var sessionEnded: ((orderId: String?) -> Unit)? = null
+}
 
 data class MeldCapabilities(
     val embeddable: Boolean,
@@ -143,6 +150,11 @@ sealed class MeldMountException(message: String) : Exception(message) {
     class Unsupported(detail: String) : MeldMountException(detail)
     object MissingWidgetUrl :
         MeldMountException("Order has no paymentMethodResponseDetails.serviceProviderWidgetUrl to load.")
+
+    /** The SDK presents this order's payment UI itself, but the host is not in an Activity on screen. */
+    object PresentationUnavailable : MeldMountException(
+        "No Activity on screen can present this payment. Mount on the main thread from a visible screen.",
+    )
 }
 
 /**
@@ -158,8 +170,10 @@ sealed class MeldMountException(message: String) : Exception(message) {
 class MeldWidgetHandle internal constructor(
     val mode: String,
     private val session: MeldProviderSession,
+    private val gate: TerminalGate,
 ) {
     fun unmount() {
+        gate.release()
         session.unmount()
     }
 }
@@ -180,6 +194,7 @@ object Meld {
         // Banxa carries no widget URL; its legacy signature uses the provider identity.
         BanxaCardAdapter(),
         MercuryoCardAdapter(),
+        HostedWalletLinkAdapter(),
     )
 
     private val registry = MeldAdapterRegistry(adapters)
@@ -222,14 +237,15 @@ object Meld {
             throw MeldMountException.Unsupported(
                 "No embeddable adapter for paymentMethodType=$type renderMode=$mode. " +
                     "This SDK supports: $supported. " +
-                    "Guard with Meld.capabilities(order).embeddable before mount.",
+                    "Guard with Meld.capabilities(order).surface != \"unsupported\" before mount.",
             )
         }
         // The adapter owns how its widget is rendered (URL in a WebView, provider SDK, …).
         // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
         // handler directly — see TerminalGate.
-        val session = adapter.mount(order, host, handlers.gated())
-        return MeldWidgetHandle(adapter.capabilities.surface, session)
+        val gate = TerminalGate()
+        val session = adapter.mount(order, host, handlers.gated(gate))
+        return MeldWidgetHandle(adapter.capabilities.surface, session, gate)
     }
 
     /** First registered adapter that handles the order, or null if none do. */

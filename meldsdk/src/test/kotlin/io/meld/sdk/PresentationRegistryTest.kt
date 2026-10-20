@@ -1,6 +1,7 @@
 package io.meld.sdk
 
 import android.view.ViewGroup
+import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -9,8 +10,8 @@ class PresentationRegistryTest {
     private fun descriptor(version: Any? = 1) = mapOf(
         "surface" to presentation.surface, "protocol" to presentation.protocol, "version" to version,
     )
-    private fun order(declaration: Any?) = MeldOrder.fromMap(mapOf(
-        "paymentMethodType" to "CREDIT_DEBIT_CARD", "headlessPresentation" to declaration,
+    private fun order(declaration: Any?, paymentMethodType: String = "CREDIT_DEBIT_CARD") = MeldOrder.fromMap(mapOf(
+        "paymentMethodType" to paymentMethodType, "headlessPresentation" to declaration,
         "payload" to mapOf("serviceProvider" to "SYNTHETIC"),
         "paymentMethodResponseDetails" to mapOf("renderMode" to "IFRAME",
             "serviceProviderWidgetUrl" to "https://sandbox-exchange.mrcr.io/?widget_id=synthetic"),
@@ -45,10 +46,61 @@ class PresentationRegistryTest {
         for (adapter in Meld.adapters) for (key in adapter.presentations) {
             assertEquals(adapter.capabilities, Meld.presentationCapabilities(key.presentation, key.paymentMethodType))
             val declared = order(mapOf("surface" to key.presentation.surface,
-                "protocol" to key.presentation.protocol, "version" to key.presentation.version))
+                "protocol" to key.presentation.protocol, "version" to key.presentation.version), key.paymentMethodType)
             assertSame(adapter, Meld.adapterFor(declared))
             assertFalse(Meld.presentationCapabilities(key.presentation.copy(version = 2), key.paymentMethodType).embeddable)
             assertFalse(Meld.presentationCapabilities(key.presentation, "APPLE_PAY").embeddable)
+        }
+    }
+
+    @Test fun google_pay_payment_link_resolves_to_the_hosted_wallet_adapter_and_apple_pay_stays_unsupported() {
+        val link = mapOf("surface" to "PROVIDER_HOSTED", "protocol" to "COINBASE_PAYMENT_LINK", "version" to 1)
+        val presentation = MeldHeadlessPresentation("PROVIDER_HOSTED", "COINBASE_PAYMENT_LINK", 1)
+        val googlePay = order(link, "GOOGLE_PAY")
+        assertEquals(presentation, googlePay.headlessPresentation)
+        assertTrue(Meld.adapterFor(googlePay) is HostedWalletLinkAdapter)
+        assertEquals(MeldCapabilities(false, "native-wallet", true),
+            HostedWalletLinkAdapter(platformSupported = { true }).capabilities)
+        assertEquals(MeldCapabilities(false, "unsupported", false),
+            HostedWalletLinkAdapter(platformSupported = { false }).capabilities)
+
+        for (unsupported in listOf(order(link, "APPLE_PAY"), order(link + ("version" to 2), "GOOGLE_PAY"),
+            order(link + ("protocol" to "COINBASE_APPLE_PAY"), "APPLE_PAY"),
+            order(link + ("protocol" to "COINBASE_APPLE_PAY"), "GOOGLE_PAY"),
+            order(link + ("surface" to "EMBEDDED_WIDGET"), "GOOGLE_PAY"))) {
+            assertNull(Meld.adapterFor(unsupported))
+            assertEquals("unsupported", Meld.capabilities(unsupported).surface)
+        }
+        assertEquals("unsupported", Meld.presentationCapabilities(presentation, "APPLE_PAY").surface)
+        assertNull(Meld.adapterFor(MeldOrder.fromMap(mapOf("paymentMethodType" to "GOOGLE_PAY",
+            "paymentMethodResponseDetails" to mapOf("paymentLinkUrl" to "https://pay.coinbase.com/buy")))))
+    }
+
+    @Test fun hosted_wallet_mount_refuses_what_it_cannot_present_before_touching_a_view() {
+        val host = object : ViewGroup(null) {
+            override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) = Unit
+        }
+        val adapter = HostedWalletLinkAdapter(platformSupported = { true })
+        val declared = mapOf("surface" to "PROVIDER_HOSTED", "protocol" to "COINBASE_PAYMENT_LINK", "version" to 1)
+        fun googlePay(details: Map<String, Any?>) = MeldOrder.fromMap(mapOf("id" to "o1",
+            "paymentMethodType" to "GOOGLE_PAY", "headlessPresentation" to declared,
+            "paymentMethodResponseDetails" to details))
+
+        assertThrows(MeldMountException.MissingWidgetUrl::class.java) {
+            adapter.mount(googlePay(emptyMap()), host, MeldEventHandlers())
+        }
+        for (url in listOf("https://untrusted.example/", "http://pay.coinbase.com/", "https://x.pay.coinbase.com/")) {
+            val error = assertThrows(MeldMountException.Unsupported::class.java) {
+                adapter.mount(googlePay(mapOf("paymentLinkUrl" to url)), host, MeldEventHandlers())
+            }
+            assertEquals("Invalid widget origin for declared presentation.", error.message)
+        }
+        val payable = googlePay(mapOf("surface" to mapOf("url" to "https://pay.coinbase.com/buy")))
+        assertThrows(MeldMountException.Unsupported::class.java) {
+            HostedWalletLinkAdapter(platformSupported = { false }).mount(payable, host, MeldEventHandlers())
+        }
+        assertThrows(MeldMountException.PresentationUnavailable::class.java) {
+            adapter.mount(payable, host, MeldEventHandlers())
         }
     }
 

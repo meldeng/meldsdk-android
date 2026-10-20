@@ -31,7 +31,7 @@ Meld.configure(MeldEnvironment.SANDBOX)
 val order = MeldOrder.fromJson(backendOrderJson) // POST /crypto/order/headless, passed through
 
 // Guard before mounting.
-if (Meld.capabilities(order).embeddable) {
+if (Meld.capabilities(order).surface != "unsupported") {
     val handle = Meld.mount(
         order,
         host, // a ViewGroup you own
@@ -49,6 +49,9 @@ if (Meld.capabilities(order).embeddable) {
 }
 ```
 
+`embeddable` only indicates whether a visible host is needed; native sheets can be supported with
+`embeddable == false`.
+
 All callbacks are invoked on the main thread.
 
 ## Events
@@ -57,15 +60,23 @@ All callbacks are invoked on the main thread.
 |---|---|---|
 | `onReady` | Widget document loaded | Hide spinner |
 | `onPaymentSubmitted` | User finished the provider payment flow — **exactly once per mount** (UX hint only) | Unmount, show "processing" |
-| `onStatusChange` | Order status changed; `e.status` is `PENDING` \| `COMPLETED` \| `FAILED` \| `CANCELLED` | React to status; `COMPLETED` = provider "order complete" (still not settlement) |
+| `onStatusChange` | Order status changed; `e.status` is `PENDING` \| `COMPLETED` \| `FAILED` \| `CANCELLED` | React to status; `COMPLETED` = provider "order complete" (still not settlement). Dropped after the terminal callback, so a `COMPLETED` after `onPaymentSubmitted` never arrives |
 | `onCancel` | User cancelled | Show retry CTA |
 | `onError` | Load failure, bad order, or terminal `FAILED` status | Show error; `e.recoverable` says retry vs. new order |
 
-`onPaymentSubmitted` fires once and only once, however the provider signals it. Some send a
-"payment finished" message and never a status; some report `COMPLETED` and never a finished
-message; some send both, in either order. The SDK collapses that into a single callback, so you
-do not need a `settledOnce` guard of your own. A terminal `FAILED`/`CANCELLED` status, a cancel,
-or a non-recoverable error closes it, so a failure is never followed by a submission.
+Each mount delivers exactly one terminal callback — `onPaymentSubmitted`, `onCancel` or a
+non-recoverable `onError` — and drops every callback after it. `onPaymentSubmitted` fires once and
+only once, however the provider signals it. Some send a "payment finished" message and never a
+status; some report `COMPLETED` and never a finished message; some send both, in either order. The
+SDK collapses that into a single callback, so you do not need a `settledOnce` guard of your own. A
+`FAILED`/`CANCELLED` status blocks the submission, so a failure is never followed by one. A session
+that ends without a terminal callback, while you still hold the handle, reports `onError` with
+`PAYMENT_OUTCOME_UNKNOWN`, or `PAYMENT_REJECTED` after a `FAILED` status.
+
+`MeldErrorCode` names the normalized error codes. `e.attemptMayExist` is false only for codes that
+say no payment attempt exists (`PAYMENT_METHOD_UNAVAILABLE`, `PRESENTATION_FAILED`,
+`PAYMENT_REJECTED`, `ORDER_STATE_CHANGED`). When it is true — `PAYMENT_OUTCOME_UNKNOWN`, or any code
+this build does not know — track the existing order and never pay it again.
 
 `status` is normalized across providers — code against it, not the raw provider string (in
 `e.providerStatus`). A terminal `FAILED` also fires `onError`, and a `CANCELLED` also fires
@@ -122,12 +133,13 @@ Use the actual quote descriptor; the values above are illustrative. This checks 
 not customer eligibility, device readiness or financial authorization. The registry currently
 supports version 1 card protocols `MERCURYO_WIDGET` and `UPHOLD_WIDGET` on `EMBEDDED_WIDGET`, and
 `BANXA_CHECKOUT` on `VENDOR_SDK` — Banxa's card form is presented by Banxa's own SDK, and `surface`
-names what the provider exposes. Provider identity does not select a declared protocol.
+names what the provider exposes — plus `GOOGLE_PAY` on `PROVIDER_HOSTED` with
+`COINBASE_PAYMENT_LINK`. Provider identity does not select a declared protocol.
 
-Android does not support native Apple Pay sheets. This build declines wallet-token, Stripe
-native, hosted-link and vendor Apple Pay protocols. Do not create an order for an unsupported
-surface; offer an explicitly supported alternative before create. For an existing unsupported
-order, preserve its identity and request key rather than silently creating a replacement.
+Apple Pay is not presented on Android; every Apple Pay protocol is declined. Do not create an
+order for an unsupported surface; offer an explicitly supported alternative before create. For an
+existing unsupported order, preserve its identity and request key rather than silently creating a
+replacement.
 
 Stored orders without the descriptor keep legacy adapters. Mercuryo/Uphold require registered
 HTTPS widget origins (no URL credentials or nonstandard ports); Banxa keeps its provider/token
@@ -136,3 +148,32 @@ orders no longer default to Mercuryo. Integrators must not strip metadata to for
 
 These APIs require a coordinated Android SDK release and wrapper adoption. No SDK artifact is
 published by this change. Browser/provider and physical-device acceptance remain separate gates.
+
+## Provider-hosted wallets (Google Pay)
+
+Some providers present a wallet from their own payment link. The SDK loads that page out of sight,
+presses its pay button once, and the customer sees only the wallet's own sheet. Such an order
+reports `embeddable = false`, `surface = "native-wallet"` and `requiresUserGesture = true`:
+
+- **Mount from the customer's tap** on your own pay button. `host` only locates the Activity and
+  nothing is drawn into it, but the payment ends if it leaves its window, so pass a view that stays
+  on screen. Hold the handle until a terminal callback.
+- **`onReady`** means the sheet was requested. A wallet this device or customer cannot pay with
+  reports `onError` with `PAYMENT_METHOD_UNAVAILABLE` (no attempt exists; offer another method).
+  Once the sheet may be up, an interrupted session reports `PAYMENT_OUTCOME_UNKNOWN`: track the
+  order and never pay it again.
+- Unmounting after `onPaymentSubmitted` keeps the page alive for up to 60 seconds so the provider
+  can finish confirming. Settlement is still the webhook.
+
+`native-wallet` names no payment method. iOS reports its Apple Pay sheets as `native-applepay`, so
+guard on `surface != "unsupported"` rather than on either value.
+
+Device and app requirements, which the SDK cannot meet for you:
+
+- Android System WebView 137 or later and Google Play services 25.18.30 or later. On a WebView
+  without Payment Request support, `Meld.capabilities` reports `unsupported`.
+- Your app must be approved for Google Pay in the Google Pay & Wallet Console and published on
+  Google Play before Google Pay works in production.
+- Do not intercept the WebView's requests with your own HTTP client. The SDK's manifest adds the
+  `org.chromium.intent.action.PAY`, `IS_READY_TO_PAY` and `UPDATE_PAYMENT_DETAILS` package queries
+  to your app.

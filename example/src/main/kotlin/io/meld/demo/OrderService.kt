@@ -65,7 +65,7 @@ class OrderService {
      * `POST /payments/crypto/quote?integrationMode=HEADLESS` — one quote per headless-capable provider for
      * the corridor (no `serviceProviders` filter), so the user can pick which provider to use.
      */
-    suspend fun quotes(): List<DemoQuote> = withContext(Dispatchers.IO) {
+    suspend fun quotes(paymentMethodType: String): List<DemoQuote> = withContext(Dispatchers.IO) {
         // Headless providers that quote on-behalf-of a customer (e.g. Uphold) require the customer id
         // on the quote itself, so the provider can resolve that customer's service-provider identity.
         val body = JSONObject(
@@ -74,7 +74,7 @@ class OrderService {
                 "sourceAmount" to DemoConfig.SOURCE_AMOUNT,
                 "sourceCurrencyCode" to DemoConfig.SOURCE_CURRENCY,
                 "destinationCurrencyCode" to DemoConfig.DESTINATION_CURRENCY,
-                "paymentMethodType" to "CREDIT_DEBIT_CARD",
+                "paymentMethodType" to paymentMethodType,
             ),
         )
         if (DemoConfig.meldCustomerId.isNotEmpty()) body.put("customerId", DemoConfig.meldCustomerId)
@@ -105,14 +105,20 @@ class OrderService {
      * `POST /crypto/order/headless/onramp` — returns the raw order JSON to hand to `MeldOrder.fromJson`.
      * `serviceProvider` is whichever quote the user selected.
      */
-    suspend fun createOrder(serviceProvider: String, customerId: String, wallet: String, clientIP: String?): String =
+    suspend fun createOrder(
+        serviceProvider: String,
+        paymentMethodType: String,
+        customerId: String,
+        wallet: String,
+        clientIP: String?,
+    ): String =
         withContext(Dispatchers.IO) {
             val body = JSONObject(
                 buildMap<String, Any?> {
                     put("customerId", customerId)
                     put("externalOrderId", "android-demo-${System.currentTimeMillis()}")
                     put("serviceProvider", serviceProvider)
-                    put("paymentMethodType", "CREDIT_DEBIT_CARD")
+                    put("paymentMethodType", paymentMethodType)
                     put("sourceCurrencyCode", DemoConfig.SOURCE_CURRENCY)
                     put("sourceAmount", DemoConfig.SOURCE_AMOUNT)
                     put("destinationCurrencyCode", DemoConfig.DESTINATION_CURRENCY)
