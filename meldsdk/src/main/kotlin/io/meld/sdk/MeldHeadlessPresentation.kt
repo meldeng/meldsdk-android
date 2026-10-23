@@ -1,5 +1,7 @@
 package io.meld.sdk
 
+import io.meld.sdk.actions.strictInt
+
 /** Advisory quote/order protocol. Unknown values remain readable but are not executable. */
 data class MeldHeadlessPresentation(val surface: String, val protocol: String, val version: Int)
 
@@ -14,15 +16,7 @@ internal sealed class PresentationDeclaration {
             val value = order["headlessPresentation"] as? Map<*, *> ?: return Invalid
             val surface = value["surface"] as? String ?: return Invalid
             val protocol = value["protocol"] as? String ?: return Invalid
-            val number = value["version"] as? Number ?: return Invalid
-            // RN maps JSON numbers to doubles; accept exact integral values without truncation.
-            val version = try {
-                number.toString().toBigDecimal().intValueExact()
-            } catch (_: IllegalArgumentException) {
-                return Invalid
-            } catch (_: ArithmeticException) {
-                return Invalid
-            }
+            val version = strictInt(value["version"]) ?: return Invalid
             if (surface.isBlank() || protocol.isBlank() || version <= 0) return Invalid
             return Declared(MeldHeadlessPresentation(surface, protocol, version))
         }
@@ -49,6 +43,8 @@ internal class MeldAdapterRegistry(adapters: List<MeldAdapter>) {
     fun adapter(order: MeldOrder): MeldAdapter? = when (val declaration = order.presentationDeclaration) {
         PresentationDeclaration.Absent -> legacy.firstOrNull { it.matches(order) }
         PresentationDeclaration.Invalid -> null
-        is PresentationDeclaration.Declared -> order.paymentMethodType?.let { adapter(declaration.value, it) }
+        is PresentationDeclaration.Declared -> order.paymentMethodType
+            ?.let { adapter(declaration.value, it) }
+            ?.takeIf { it.acceptsDeclaredOrder(order) }
     }
 }
