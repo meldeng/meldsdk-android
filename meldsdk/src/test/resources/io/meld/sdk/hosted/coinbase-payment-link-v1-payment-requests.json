@@ -1,0 +1,86 @@
+{
+  "source": "Every window.PaymentRequest on pay.coinbase.com, as the device harness summarizes its methodData: COINBASE_PAYMENT_LINK v1, sandbox Google Pay order, Galaxy S25, 2026-10-20",
+  "requests": [
+    {
+      "supportedMethods": "https://google.com/pay",
+      "apiVersion": 2,
+      "allowedPaymentMethods": [
+        {
+          "type": "CARD",
+          "authMethods": [
+            "PAN_ONLY",
+            "CRYPTOGRAM_3DS"
+          ],
+          "networks": [
+            "VISA",
+            "MASTERCARD"
+          ]
+        }
+      ]
+    },
+    {
+      "supportedMethods": "https://google.com/pay",
+      "environment": "TEST",
+      "apiVersion": 2,
+      "existingPaymentMethodRequired": true,
+      "allowedPaymentMethods": [
+        {
+          "type": "CARD",
+          "authMethods": [
+            "CRYPTOGRAM_3DS"
+          ],
+          "networks": [
+            "VISA",
+            "MASTERCARD",
+            "AMEX",
+            "DISCOVER"
+          ],
+          "gateway": "checkoutltd"
+        }
+      ],
+      "merchantName": "Coinbase Pay"
+    },
+    {
+      "supportedMethods": "https://google.com/pay",
+      "environment": "TEST",
+      "apiVersion": 2,
+      "allowedPaymentMethods": [
+        {
+          "type": "CARD",
+          "authMethods": [
+            "CRYPTOGRAM_3DS"
+          ],
+          "networks": [
+            "VISA",
+            "MASTERCARD",
+            "AMEX",
+            "DISCOVER"
+          ],
+          "gateway": "checkoutltd"
+        }
+      ],
+      "merchantName": "Coinbase Pay"
+    },
+    {
+      "supportedMethods": "https://google.com/pay",
+      "environment": "TEST",
+      "apiVersion": 2,
+      "allowedPaymentMethods": [
+        {
+          "type": "CARD",
+          "authMethods": [
+            "CRYPTOGRAM_3DS"
+          ],
+          "networks": [
+            "VISA",
+            "MASTERCARD",
+            "AMEX",
+            "DISCOVER"
+          ],
+          "gateway": "checkoutltd"
+        }
+      ],
+      "merchantName": "Coinbase Pay"
+    }
+  ]
+}

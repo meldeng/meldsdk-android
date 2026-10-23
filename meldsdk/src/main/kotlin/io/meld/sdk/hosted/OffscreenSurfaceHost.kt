@@ -17,15 +17,14 @@ import android.widget.FrameLayout
  * attached and visible for its sheet to open, but the customer should only ever see the sheet, so it
  * is hosted full-size over the host Activity's content at zero alpha and lets every touch through.
  *
- * The integrator's host view only locates the Activity; the surface ends when that host leaves its
- * window. Main thread.
+ * Mounted from a host view, that view only locates the Activity and the surface ends when it leaves
+ * its window. Mounted from the Activity, the surface ends when the Activity is destroyed. Main thread.
  */
-internal class OffscreenSurfaceHost private constructor(
-    activity: Activity,
+internal class OffscreenSurfaceHost(
     override val container: ViewGroup,
-    private val host: View,
+    override val foreground: ActivityForeground,
+    private val host: View?,
 ) : HostedSurface {
-    override val foreground = ActivityForeground(activity)
     override var onHostGone: (() -> Unit)? = null
 
     private val watcher = object : View.OnAttachStateChangeListener {
@@ -37,7 +36,11 @@ internal class OffscreenSurfaceHost private constructor(
     }
 
     init {
-        host.addOnAttachStateChangeListener(watcher)
+        if (host == null) {
+            foreground.onDestroyed = { onHostGone?.invoke() }
+        } else {
+            host.addOnAttachStateChangeListener(watcher)
+        }
     }
 
     override fun remove() {
@@ -46,7 +49,7 @@ internal class OffscreenSurfaceHost private constructor(
             return
         }
         onHostGone = null
-        host.removeOnAttachStateChangeListener(watcher)
+        host?.removeOnAttachStateChangeListener(watcher)
         foreground.close()
         (container.parent as? ViewGroup)?.removeView(container)
     }
@@ -58,10 +61,19 @@ internal class OffscreenSurfaceHost private constructor(
     }
 
     companion object {
-        /** Null off the main thread, or when the host is not in an Activity whose window is on screen. */
+        /** Ends when [host] leaves its window. Null off the main thread, or when the host is not in an Activity on screen. */
         fun attach(host: View): OffscreenSurfaceHost? {
             if (Looper.myLooper() != Looper.getMainLooper()) return null
-            val activity = findActivity(host.context) ?: return null
+            return findActivity(host.context)?.let { attach(it, host) }
+        }
+
+        /** Ends when [activity] is destroyed. Null off the main thread, or when [activity] is not on screen. */
+        fun attach(activity: Activity): OffscreenSurfaceHost? {
+            if (Looper.myLooper() != Looper.getMainLooper()) return null
+            return attach(activity, null)
+        }
+
+        private fun attach(activity: Activity, host: View?): OffscreenSurfaceHost? {
             if (activity.isFinishing || activity.isDestroyed) return null
             val content = activity.findViewById<ViewGroup?>(android.R.id.content) ?: return null
             if (!content.isAttachedToWindow || content.windowVisibility != View.VISIBLE) return null
@@ -73,7 +85,7 @@ internal class OffscreenSurfaceHost private constructor(
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             }
             content.addView(container, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            return OffscreenSurfaceHost(activity, container, host)
+            return OffscreenSurfaceHost(container, ActivityForeground(activity), host)
         }
     }
 }
@@ -87,21 +99,26 @@ internal fun findActivity(of: Context?): Activity? {
     return null
 }
 
-/** Follows the host Activity's pause and resume. Mounted from the customer's tap, so it starts resumed. */
-internal class ActivityForeground(private val activity: Activity) :
-    HostForeground, Application.ActivityLifecycleCallbacks {
+/** Follows the host Activity's pause, resume and destruction. Mounted from the customer's tap, so it starts resumed. */
+internal class ActivityForeground(
+    private val activity: Activity,
+    private val application: Application = activity.application,
+) : HostForeground, Application.ActivityLifecycleCallbacks {
     override var resumed = true
         private set
+
+    var onDestroyed: (() -> Unit)? = null
 
     private val listeners = mutableListOf<Pair<() -> Unit, () -> Unit>>()
 
     init {
-        activity.application.registerActivityLifecycleCallbacks(this)
+        application.registerActivityLifecycleCallbacks(this)
     }
 
     fun close() {
         listeners.clear()
-        activity.application.unregisterActivityLifecycleCallbacks(this)
+        onDestroyed = null
+        application.unregisterActivityLifecycleCallbacks(this)
     }
 
     override fun observe(onPaused: () -> Unit, onResumed: () -> Unit): Cancellable {
@@ -130,5 +147,8 @@ internal class ActivityForeground(private val activity: Activity) :
 
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
 
-    override fun onActivityDestroyed(activity: Activity) = Unit
+    override fun onActivityDestroyed(activity: Activity) {
+        if (activity !== this.activity) return
+        onDestroyed?.invoke()
+    }
 }

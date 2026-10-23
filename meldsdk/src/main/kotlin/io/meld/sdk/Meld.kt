@@ -1,8 +1,11 @@
 package io.meld.sdk
 
+import android.app.Activity
+import android.content.Context
 import android.util.Log
 import android.view.ViewGroup
 import io.meld.sdk.hosted.HostedWalletLinkAdapter
+import io.meld.sdk.hosted.MainScheduler
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -10,7 +13,7 @@ import org.json.JSONObject
 // Public surface of the SDK. The same shape as the web SDK (@meldcrypto/sdk) and the iOS SDK:
 //   Meld.configure(environment)
 //   Meld.capabilities(order)
-//   Meld.mount(order, host, handlers)
+//   Meld.mount(order, host, handlers)   or   Meld.mount(order, activity, handlers)
 //   handle.unmount()
 // The order's declared protocol selects its adapter; legacy hints apply only if absent, so
 // supporting a new provider does not change this API. Supported today: Mercuryo card.
@@ -119,6 +122,8 @@ data class MeldError(
     /** Extra diagnostic detail when the SDK has it (e.g. a load-failure probe). May be null. */
     val detail: String? = null,
     val recoverable: Boolean,
+    /** The mounted order's `paymentMethodType`, such as `GOOGLE_PAY`, for copy that names the method. Null if it has none. */
+    val paymentMethodType: String? = null,
 ) {
     /** Whether a payment attempt may exist for this order. See [MeldErrorCode.attemptMayExist]. */
     val attemptMayExist: Boolean get() = MeldErrorCode.attemptMayExist(code)
@@ -139,6 +144,14 @@ class MeldEventHandlers(
     internal var sessionEnded: ((orderId: String?) -> Unit)? = null
 }
 
+/** The handlers a mount hands its adapter: every error carries [order]'s method, behind [gate]. */
+internal fun MeldEventHandlers.forMount(order: MeldOrder, gate: TerminalGate): MeldEventHandlers {
+    val onError = onError ?: return gated(gate)
+    return MeldEventHandlers(onReady, onPaymentSubmitted, onStatusChange, onCancel) { error ->
+        onError(error.copy(paymentMethodType = order.paymentMethodType))
+    }.gated(gate)
+}
+
 data class MeldCapabilities(
     val embeddable: Boolean,
     val surface: String,
@@ -150,6 +163,10 @@ sealed class MeldMountException(message: String) : Exception(message) {
     class Unsupported(detail: String) : MeldMountException(detail)
     object MissingWidgetUrl :
         MeldMountException("Order has no paymentMethodResponseDetails.serviceProviderWidgetUrl to load.")
+
+    /** This order's surface renders into a view, but it was mounted with an Activity instead of a host. */
+    class MissingHost(label: String) :
+        MeldMountException("$label renders into a view. Call Meld.mount(order, host, handlers) with a host ViewGroup.")
 
     /** The SDK presents this order's payment UI itself, but the host is not in an Activity on screen. */
     object PresentationUnavailable : MeldMountException(
@@ -180,6 +197,7 @@ class MeldWidgetHandle internal constructor(
 
 object Meld {
     private const val TAG = "MeldSDK"
+    private const val READINESS_TIMEOUT_MS = 5_000L
 
     @Volatile
     var environment: MeldEnvironment = MeldEnvironment.SANDBOX
@@ -198,6 +216,7 @@ object Meld {
     )
 
     private val registry = MeldAdapterRegistry(adapters)
+    private val deviceReadiness = DeviceReadiness()
 
     @JvmStatic
     fun configure(environment: MeldEnvironment) {
@@ -219,6 +238,31 @@ object Meld {
             ?: MeldCapabilities(embeddable = false, surface = "unsupported", requiresUserGesture = false)
 
     /**
+     * Whether this device can pay with [paymentMethodType] at all, asked before you quote. `GOOGLE_PAY` asks
+     * Google Pay for any card, `APPLE_PAY` is [MeldReadiness.Unavailable], and a method with no device
+     * precondition, such as a card, is [MeldReadiness.Unknown]. [onResult] runs once, on the main thread.
+     */
+    @JvmStatic
+    fun paymentMethodReadiness(context: Context, paymentMethodType: String, onResult: (MeldReadiness) -> Unit) {
+        deviceReadiness.ask(context, paymentMethodType, MainScheduler, READINESS_TIMEOUT_MS, onResult)
+    }
+
+    /**
+     * Whether this device can pay with a quote row's method, asked before you create the order. Pass the
+     * row's `headlessPresentation` and `paymentMethodType`. [onResult] runs once, on the main thread.
+     */
+    @JvmStatic
+    fun presentationReadiness(
+        context: Context,
+        presentation: MeldHeadlessPresentation,
+        paymentMethodType: String,
+        onResult: (MeldReadiness) -> Unit,
+    ) {
+        val query = ReadinessQuery(context, presentation, paymentMethodType)
+        askReadiness(registry.adapter(presentation, paymentMethodType), query, MainScheduler, READINESS_TIMEOUT_MS, onResult)
+    }
+
+    /**
      * Mount the provider widget into a host [ViewGroup] you own. Returns a handle; call
      * `handle.unmount()` to tear down.
      */
@@ -229,6 +273,27 @@ object Meld {
         order: MeldOrder,
         host: ViewGroup,
         handlers: MeldEventHandlers = MeldEventHandlers(),
+    ): MeldWidgetHandle = mountWith(order, handlers) { adapter, gated -> adapter.mount(order, host, gated) }
+
+    /**
+     * Mount an order whose surface draws into no view of yours (`capabilities.embeddable == false`) for
+     * the life of [activity]. The payment ends only when [activity] is destroyed or you call
+     * `handle.unmount()`, not when one of your views leaves its window. An embeddable order throws
+     * [MeldMountException.MissingHost]. Call on the main thread.
+     */
+    @JvmStatic
+    @JvmOverloads
+    @Throws(MeldMountException::class)
+    fun mount(
+        order: MeldOrder,
+        activity: Activity,
+        handlers: MeldEventHandlers = MeldEventHandlers(),
+    ): MeldWidgetHandle = mountWith(order, handlers) { adapter, gated -> adapter.mount(order, activity, gated) }
+
+    private inline fun mountWith(
+        order: MeldOrder,
+        handlers: MeldEventHandlers,
+        present: (MeldAdapter, MeldEventHandlers) -> MeldProviderSession,
     ): MeldWidgetHandle {
         val adapter = adapterFor(order) ?: run {
             val type = order.paymentMethodType ?: "null"
@@ -244,7 +309,7 @@ object Meld {
         // Gate here rather than in a host's dispatch so it also covers adapters that invoke a
         // handler directly — see TerminalGate.
         val gate = TerminalGate()
-        val session = adapter.mount(order, host, handlers.gated(gate))
+        val session = present(adapter, handlers.forMount(order, gate))
         return MeldWidgetHandle(adapter.capabilities.surface, session, gate)
     }
 

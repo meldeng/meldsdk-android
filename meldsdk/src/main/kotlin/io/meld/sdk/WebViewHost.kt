@@ -52,6 +52,8 @@ internal class WebViewHost(
     private val firesReadyOnNavigation: Boolean = true,
     // window.<name>.postMessage objects a page posts to directly; each body reaches interpret as {channel, body}.
     private val nativeMessageChannels: Set<String> = emptySet(),
+    // False installs no window.meld bridge, for a page whose events arrive only on nativeMessageChannels.
+    private val relaysWindowMessages: Boolean = true,
     // Non-empty pins main-frame navigation to these https hosts, denies popups, and gates evaluateJavascript.
     private val mainFrameHosts: Set<String> = emptySet(),
     private val paymentRequestEnabled: Boolean = false,
@@ -135,7 +137,7 @@ internal class WebViewHost(
                 // successful load (e.g. a redirect after a transient error) can still report ready.
                 loadFailed = false
                 // Fallback bridge injection for WebViews that don't support document-start scripts.
-                if (!documentStartSupported) {
+                if (relaysWindowMessages && !documentStartSupported) {
                     view?.evaluateJavascript(bridgeScript(), null)
                 }
             }
@@ -149,7 +151,7 @@ internal class WebViewHost(
                 if (request?.isForMainFrame == true) {
                     loadFailed = true
                     emitError(
-                        code = "PROVIDER_LOAD_FAILED",
+                        code = MeldErrorCode.PROVIDER_LOAD_FAILED.raw,
                         message = error?.description?.toString() ?: "load failed",
                         detail = error?.let { "errorCode #${it.errorCode}" },
                         recoverable = true,
@@ -169,7 +171,7 @@ internal class WebViewHost(
                     loadFailed = true
                     val status = errorResponse?.statusCode ?: 0
                     emitError(
-                        code = "PROVIDER_LOAD_FAILED",
+                        code = MeldErrorCode.PROVIDER_LOAD_FAILED.raw,
                         message = "Widget URL returned HTTP $status",
                         detail = "httpStatus #$status",
                         recoverable = status >= 500, // 5xx may be transient; 4xx needs a new order
@@ -269,6 +271,7 @@ internal class WebViewHost(
      * domains, and blocking those would break payments.
      */
     private fun installBridge(web: WebView) {
+        if (!relaysWindowMessages) return
         val originRules = allowedOrigins.ifEmpty { setOf("*") }
         val originScoped = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
             WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)

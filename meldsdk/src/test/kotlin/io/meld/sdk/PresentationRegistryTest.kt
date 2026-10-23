@@ -1,5 +1,6 @@
 package io.meld.sdk
 
+import android.app.Activity
 import android.view.ViewGroup
 import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import org.junit.Assert.*
@@ -102,6 +103,22 @@ class PresentationRegistryTest {
         assertThrows(MeldMountException.PresentationUnavailable::class.java) {
             adapter.mount(payable, host, MeldEventHandlers())
         }
+        assertThrows(MeldMountException.MissingWidgetUrl::class.java) {
+            adapter.mount(googlePay(emptyMap()), Activity(), MeldEventHandlers())
+        }
+        assertThrows(MeldMountException.PresentationUnavailable::class.java) {
+            adapter.mount(payable, Activity(), MeldEventHandlers())
+        }
+    }
+
+    @Test fun an_activity_mount_refuses_an_order_that_renders_into_a_view() {
+        for (adapter in Meld.adapters.filter { it.capabilities.embeddable }) for (key in adapter.presentations) {
+            val declared = order(mapOf("surface" to key.presentation.surface,
+                "protocol" to key.presentation.protocol, "version" to key.presentation.version), key.paymentMethodType)
+            val error = assertThrows(MeldMountException.MissingHost::class.java) { Meld.mount(declared, Activity()) }
+            assertTrue(error.message!!, error.message!!.startsWith(adapter.label))
+        }
+        assertThrows(MeldMountException.Unsupported::class.java) { Meld.mount(order(descriptor(2)), Activity()) }
     }
 
     @Test fun synthetic_adapter_registration_needs_no_shared_dispatch_changes_and_rejects_duplicates() {

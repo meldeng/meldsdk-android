@@ -1,5 +1,6 @@
 package io.meld.demo
 
+import io.meld.sdk.MeldHeadlessPresentation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -38,6 +39,7 @@ data class DemoQuote(
     val totalFee: Double?,
     val exchangeRate: Double?,
     val kycMode: String?,
+    val headlessPresentation: MeldHeadlessPresentation?,
 )
 
 class DemoException(message: String) : Exception(message)
@@ -95,6 +97,7 @@ class OrderService {
                         totalFee = q.optDoubleOrNull("totalFee"),
                         exchangeRate = q.optDoubleOrNull("exchangeRate"),
                         kycMode = q.optString("kycMode").ifEmpty { null },
+                        headlessPresentation = q.optJSONObject("headlessPresentation")?.toPresentation(),
                     ),
                 )
             }
@@ -156,6 +159,13 @@ class OrderService {
             conn.disconnect()
         }
     }
+}
+
+private fun JSONObject.toPresentation(): MeldHeadlessPresentation? {
+    val surface = optString("surface").ifEmpty { return null }
+    val protocol = optString("protocol").ifEmpty { return null }
+    val version = optInt("version").takeIf { it > 0 } ?: return null
+    return MeldHeadlessPresentation(surface, protocol, version)
 }
 
 private fun JSONObject.optDoubleOrNull(key: String): Double? =

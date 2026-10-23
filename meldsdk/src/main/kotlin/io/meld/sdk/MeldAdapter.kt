@@ -1,5 +1,6 @@
 package io.meld.sdk
 
+import android.app.Activity
 import android.view.ViewGroup
 
 /**
@@ -42,6 +43,9 @@ internal interface MeldAdapter {
     /** What this adapter can do with a matching order. */
     val capabilities: MeldCapabilities
 
+    /** Whether this device can pay [query]'s method before an order exists. Answer once, from any thread. */
+    fun readiness(query: ReadinessQuery, onResult: (MeldReadiness) -> Unit) = onResult(capabilityReadiness(capabilities))
+
     /**
      * Whether this adapter handles the given order discriminators. [widgetUrl] lets an adapter
      * distinguish providers that share a (paymentMethodType, renderMode) — e.g. two `IFRAME` card
@@ -67,4 +71,9 @@ internal interface MeldAdapter {
      */
     @Throws(MeldMountException::class)
     fun mount(order: MeldOrder, host: ViewGroup, handlers: MeldEventHandlers): MeldProviderSession
+
+    /** Present the order for the life of [activity], with no host view. Only an adapter that draws into none supports it. */
+    @Throws(MeldMountException::class)
+    fun mount(order: MeldOrder, activity: Activity, handlers: MeldEventHandlers): MeldProviderSession =
+        throw MeldMountException.MissingHost(label)
 }

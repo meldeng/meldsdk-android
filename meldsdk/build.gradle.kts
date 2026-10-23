@@ -35,6 +35,8 @@ android {
             // MeldOrder.fromJson uses org.json, which is a stub in unit tests; the real impl is
             // provided via the org.json test dependency below.
             isReturnDefaultValues = true
+            // ConsumerRulesTest reads the shipped rules, so a change to them reruns the tests.
+            all { it.inputs.file("consumer-rules.pro") }
         }
     }
 }
@@ -42,6 +44,11 @@ android {
 dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.annotation)
+    implementation(libs.play.services.wallet) {
+        // Wallet uses Maps only for LatLng in wallet objects the SDK never builds, and Maps' manifest
+        // requires OpenGL ES 2 of every app.
+        exclude(group = "com.google.android.gms", module = "play-services-maps")
+    }
 
     testImplementation(libs.junit)
     testImplementation(libs.org.json)

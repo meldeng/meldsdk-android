@@ -388,10 +388,17 @@ internal class UpholdCardAdapter : MeldAdapter {
         private fun errorFrom(providerMessage: Map<String, Any?>, orderId: String?): MeldError {
             val detail = providerMessage["detail"] as? Map<String, Any?>
             val error = detail?.get("error") as? Map<String, Any?>
+            val providerCode = (error?.get("code") as? String) ?: "error"
+            val code = when (providerCode) {
+                "sdk_unavailable" -> MeldErrorCode.PROVIDER_LOAD_FAILED.raw
+                "mount_failed" -> MeldErrorCode.PRESENTATION_FAILED.raw
+                else -> null
+            }
             return MeldError(
                 orderId = orderId,
-                code = (error?.get("code") as? String) ?: "error",
+                code = code ?: providerCode,
                 message = (error?.get("message") as? String) ?: "Uphold widget error",
+                detail = code?.let { "uphold_card_failed:$providerCode" },
                 recoverable = false,
             )
         }

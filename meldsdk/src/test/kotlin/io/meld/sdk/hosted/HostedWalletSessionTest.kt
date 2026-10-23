@@ -1,5 +1,8 @@
 package io.meld.sdk.hosted
 
+import android.app.Activity
+import android.app.Application
+import android.view.View
 import android.view.ViewGroup
 import io.meld.sdk.MeldError
 import io.meld.sdk.MeldEventHandlers
@@ -19,37 +22,6 @@ import kotlin.concurrent.thread
  * virtual clock. No page is loaded and no sheet is shown.
  */
 class HostedWalletSessionTest {
-
-    private class VirtualClock : Scheduler {
-        private class Task(val at: Long, val order: Int, val work: () -> Unit)
-
-        private val tasks = mutableListOf<Task>()
-        private val owner = Thread.currentThread()
-        private var scheduled = 0
-        var time = 0L
-            private set
-
-        override val isCurrentThread: Boolean get() = Thread.currentThread() === owner
-
-        override fun now(): Long = time
-
-        override fun schedule(delayMs: Long, work: () -> Unit): Cancellable {
-            val task = Task(time + delayMs, scheduled++, work)
-            tasks += task
-            return Cancellable { tasks -= task }
-        }
-
-        fun advance(ms: Long = 0) {
-            val end = time + ms
-            while (true) {
-                val next = tasks.filter { it.at <= end }.minWithOrNull(compareBy({ it.at }, { it.order })) ?: break
-                tasks -= next
-                time = next.at
-                next.work()
-            }
-            time = end
-        }
-    }
 
     private class FakeForeground : HostForeground {
         override var resumed = true
@@ -87,6 +59,40 @@ class HostedWalletSessionTest {
         fun hostLeaves() = onHostGone?.invoke()
     }
 
+    private class FakeApplication : Application() {
+        val callbacks = mutableListOf<ActivityLifecycleCallbacks>()
+
+        override fun registerActivityLifecycleCallbacks(callback: ActivityLifecycleCallbacks) {
+            callbacks += callback
+        }
+
+        override fun unregisterActivityLifecycleCallbacks(callback: ActivityLifecycleCallbacks) {
+            callbacks -= callback
+        }
+
+        fun paused(activity: Activity) = callbacks.toList().forEach { it.onActivityPaused(activity) }
+
+        fun resumed(activity: Activity) = callbacks.toList().forEach { it.onActivityResumed(activity) }
+
+        fun stopped(activity: Activity) = callbacks.toList().forEach { it.onActivityStopped(activity) }
+
+        fun destroyed(activity: Activity) = callbacks.toList().forEach { it.onActivityDestroyed(activity) }
+    }
+
+    private class FakeHostView : View(null) {
+        val watchers = mutableListOf<OnAttachStateChangeListener>()
+
+        override fun addOnAttachStateChangeListener(listener: OnAttachStateChangeListener) {
+            watchers += listener
+        }
+
+        override fun removeOnAttachStateChangeListener(listener: OnAttachStateChangeListener) {
+            watchers -= listener
+        }
+
+        fun leavesWindow() = watchers.toList().forEach { it.onViewDetachedFromWindow(this) }
+    }
+
     private class FakePage(private val clock: VirtualClock, private val log: MutableList<String>) : HostedPage {
         val answers = ArrayDeque<String?>()
         val unanswered = mutableListOf<(String?) -> Unit>()
@@ -111,7 +117,7 @@ class HostedWalletSessionTest {
         }
     }
 
-    private class Harness(timing: HostedWalletSession.Timing = FAST) {
+    private class Harness(timing: HostedWalletSession.Timing = FAST, attachedTo: HostedSurface? = null) {
         val clock = VirtualClock()
         val log = mutableListOf<String>()
         val errors = mutableListOf<MeldError>()
@@ -133,7 +139,7 @@ class HostedWalletSessionTest {
         val session = HostedWalletSession("o1", handlers, PROFILE, SCRIPT, timing, clock, surfaces)
 
         init {
-            session.start(page, surface)
+            session.start(page, attachedTo ?: surface)
         }
 
         fun send(eventName: String, data: String = "{}") = session.receive(message(eventName, data))
@@ -627,6 +633,92 @@ class HostedWalletSessionTest {
         assertEquals(listOf("ready", "status:pending", "submitted", "unmount"), h.log)
     }
 
+    // MARK: - Activity-scoped surface
+
+    @Test
+    fun `an Activity-scoped session ignores a view leaving its window and ends when its Activity is destroyed`() {
+        val app = FakeApplication()
+        val activity = Activity()
+        val view = FakeHostView()
+        val viewScoped = Harness(attachedTo = OffscreenSurfaceHost(container(), ActivityForeground(activity, app), view))
+            .presented()
+        val activityScoped = Harness(attachedTo = activityScoped(activity, app)).presented()
+
+        view.leavesWindow()
+        assertEquals(listOf("ready", "unmount", "error:PAYMENT_OUTCOME_UNKNOWN"), viewScoped.log)
+        assertEquals(listOf("ready"), activityScoped.log)
+
+        app.paused(activity)
+        app.stopped(activity)
+        app.resumed(activity)
+        app.destroyed(Activity())
+        activityScoped.clock.advance(FAST.presentationCeilingMs - 1)
+        assertEquals(listOf("ready"), activityScoped.log)
+
+        app.destroyed(activity)
+        assertEquals(listOf("ready", "unmount", "error:PAYMENT_OUTCOME_UNKNOWN"), activityScoped.log)
+        assertTrue(activityScoped.errors.single().attemptMayExist)
+        assertTrue(app.callbacks.isEmpty())
+    }
+
+    @Test
+    fun `an Activity destroyed before the press is a presentation failure with no attempt`() {
+        val app = FakeApplication()
+        val activity = Activity()
+        val h = Harness(attachedTo = activityScoped(activity, app))
+
+        app.destroyed(activity)
+
+        assertEquals(listOf("error:PRESENTATION_FAILED", "unmount"), h.log)
+        assertFalse(h.errors.single().attemptMayExist)
+    }
+
+    @Test
+    fun `an Activity destroyed after submission keeps the page until it settles`() {
+        val app = FakeApplication()
+        val activity = Activity()
+        val h = Harness(attachedTo = activityScoped(activity, app)).presented()
+        h.send("onramp_api.commit_success")
+
+        app.destroyed(activity)
+        assertEquals(1, h.surfaces.count)
+        h.send("onramp_api.polling_success")
+
+        assertEquals(0, h.surfaces.count)
+        assertEquals(listOf("ready", "status:pending", "submitted", "unmount"), h.log)
+        assertTrue(app.callbacks.isEmpty())
+    }
+
+    @Test
+    fun `an Activity-scoped session the integrator unmounts lets go of the Activity with no callback`() {
+        val app = FakeApplication()
+        val activity = Activity()
+        val h = Harness(attachedTo = activityScoped(activity, app)).presented()
+        assertEquals(1, app.callbacks.size)
+
+        MeldWidgetHandle("native-wallet", h.session, h.gate).unmount()
+        app.destroyed(activity)
+
+        assertEquals(listOf("ready", "unmount"), h.log)
+        assertTrue(app.callbacks.isEmpty())
+    }
+
+    @Test
+    fun `only the Activity's own pause counts as the sheet opening`() {
+        val app = FakeApplication()
+        val activity = Activity()
+        val own = Harness(attachedTo = activityScoped(activity, app)).presented()
+        val other = Harness(attachedTo = activityScoped(Activity(), app)).presented()
+
+        app.paused(activity)
+        own.clock.advance(FAST.presentationDeadlineMs)
+        other.clock.advance(FAST.presentationDeadlineMs)
+
+        assertEquals(listOf("ready"), own.log)
+        assertEquals(listOf("ready", "error:PRESENTATION_FAILED", "unmount"), other.log)
+        assertEquals("presentation_deadline", other.errors.single().detail)
+    }
+
     @Test
     fun `the shipped timing is twenty presses a quarter second apart within the iOS bounds`() {
         val timing = HostedWalletSession.Timing()
@@ -654,5 +746,12 @@ class HostedWalletSessionTest {
 
         fun message(eventName: String, data: String = "{}"): Map<String, Any?> =
             mapOf("channel" to PROFILE.channel, "body" to """{"eventName":"$eventName","data":$data}""")
+
+        fun container(): ViewGroup = object : ViewGroup(null) {
+            override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) = Unit
+        }
+
+        fun activityScoped(activity: Activity, app: Application): OffscreenSurfaceHost =
+            OffscreenSurfaceHost(container(), ActivityForeground(activity, app), host = null)
     }
 }

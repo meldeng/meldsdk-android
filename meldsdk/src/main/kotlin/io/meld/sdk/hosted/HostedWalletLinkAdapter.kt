@@ -1,5 +1,6 @@
 package io.meld.sdk.hosted
 
+import android.app.Activity
 import android.util.Log
 import android.view.ViewGroup
 import androidx.webkit.WebViewFeature
@@ -11,7 +12,10 @@ import io.meld.sdk.MeldHeadlessPresentation
 import io.meld.sdk.MeldMountException
 import io.meld.sdk.MeldOrder
 import io.meld.sdk.MeldProviderSession
+import io.meld.sdk.MeldReadiness
+import io.meld.sdk.ReadinessQuery
 import io.meld.sdk.WebViewHost
+import io.meld.sdk.googlepay.GooglePayReadiness
 import io.meld.sdk.isRegisteredWidgetUrl
 
 /**
@@ -22,6 +26,7 @@ import io.meld.sdk.isRegisteredWidgetUrl
 internal class HostedWalletLinkAdapter(
     profiles: List<HostedLinkProfile> = HostedLinkProfiles.all,
     private val platformSupported: () -> Boolean = ::webViewHostsWalletPages,
+    private val googlePay: GooglePayReadiness = GooglePayReadiness(),
 ) : MeldAdapter {
     private val profiles = profiles.associateBy { it.protocol }
 
@@ -42,7 +47,19 @@ internal class HostedWalletLinkAdapter(
 
     override fun matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?): Boolean = false
 
-    override fun mount(order: MeldOrder, host: ViewGroup, handlers: MeldEventHandlers): MeldProviderSession {
+    override fun readiness(query: ReadinessQuery, onResult: (MeldReadiness) -> Unit) {
+        val spec = profiles[query.presentation.protocol]?.readiness?.get(query.paymentMethodType)
+        if (spec == null || !platformSupported()) return super.readiness(query, onResult)
+        googlePay.check(query.context, spec, onResult)
+    }
+
+    override fun mount(order: MeldOrder, host: ViewGroup, handlers: MeldEventHandlers): MeldProviderSession =
+        mountWith(order, handlers) { OffscreenSurfaceHost.attach(host) }
+
+    override fun mount(order: MeldOrder, activity: Activity, handlers: MeldEventHandlers): MeldProviderSession =
+        mountWith(order, handlers) { OffscreenSurfaceHost.attach(activity) }
+
+    private fun mountWith(order: MeldOrder, handlers: MeldEventHandlers, attach: () -> HostedSurface?): MeldProviderSession {
         if (!platformSupported()) {
             throw MeldMountException.Unsupported("This device's WebView cannot present a provider-hosted wallet.")
         }
@@ -54,7 +71,7 @@ internal class HostedWalletLinkAdapter(
         if (!isRegisteredWidgetUrl(link, profile.origins)) {
             throw MeldMountException.Unsupported("Invalid widget origin for declared presentation.")
         }
-        val surface = OffscreenSurfaceHost.attach(host) ?: throw MeldMountException.PresentationUnavailable
+        val surface = attach() ?: throw MeldMountException.PresentationUnavailable
 
         val session = HostedWalletSession(order.id, handlers, profile, script)
         val page = WebViewHost(
@@ -64,6 +81,7 @@ internal class HostedWalletLinkAdapter(
             allowedOrigins = profile.origins,
             firesReadyOnNavigation = false,
             nativeMessageChannels = setOf(profile.channel),
+            relaysWindowMessages = false,
             mainFrameHosts = profile.hosts,
             paymentRequestEnabled = true,
             onRenderProcessGone = session::pageTerminated,

@@ -188,6 +188,28 @@ class BanxaCardAdapterTest {
         assertEquals("card_declined", error.code)
         assertEquals("Card was declined", error.message)
         assertEquals("order-1", error.orderId)
+        assertEquals(null, error.detail)
+    }
+
+    @Test
+    fun bootstrap_load_mount_and_init_failures_map_to_Meld_codes_with_the_bootstrap_code_in_detail() {
+        fun bootstrapError(code: String) = (BanxaWebCheckoutPresenter.interpret(
+            mapOf("type" to "error", "detail" to mapOf("error" to mapOf("code" to code, "message" to "m"))),
+            "order-1",
+        ).single() as MeldEvent.Error).error
+
+        val load = bootstrapError("sdk_unavailable")
+        assertEquals("PROVIDER_LOAD_FAILED", load.code)
+        assertEquals("banxa_card_failed:sdk_unavailable", load.detail)
+        assertTrue(load.attemptMayExist)
+
+        for (code in listOf("mount_failed", "checkout_init_failed")) {
+            val error = bootstrapError(code)
+            assertEquals(code, "PRESENTATION_FAILED", error.code)
+            assertEquals(code, "banxa_card_failed:$code", error.detail)
+            assertEquals(code, "m", error.message)
+            assertFalse(code, error.attemptMayExist)
+        }
     }
 
     @Test

@@ -19,4 +19,11 @@
         </intent>
     </queries>
 
+    <application>
+        <!-- Lets Meld.presentationReadiness ask Google Pay whether this device can pay. -->
+        <meta-data
+            android:name="com.google.android.gms.wallet.api.enabled"
+            android:value="true" />
+    </application>
+
 </manifest>
