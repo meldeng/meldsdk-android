@@ -7,6 +7,7 @@ import io.meld.sdk.MeldErrorMessage
 import io.meld.sdk.MeldEvent
 import io.meld.sdk.MeldStatus
 import io.meld.sdk.MeldStatusChange
+import io.meld.sdk.googlepay.GooglePayReadinessSpec
 import io.meld.sdk.toMap
 import org.json.JSONException
 import org.json.JSONObject
@@ -24,6 +25,8 @@ internal class HostedLinkProfile(
     val channel: String,
     /** Per payment method, a script that presses the page's pay button once and answers 'clicked' or 'missing'. */
     val presentScripts: Map<String, String>,
+    /** Per payment method, the Google Pay readiness the page's own request asks of the device. */
+    val readiness: Map<String, GooglePayReadinessSpec>,
     private val events: (body: Map<String, Any?>, orderId: String?) -> List<MeldEvent>,
 ) {
     val origins: Set<String> = hosts.mapTo(LinkedHashSet()) { "https://$it" }
@@ -49,6 +52,13 @@ internal object HostedLinkProfiles {
             hosts = setOf("pay.coinbase.com"),
             channel = "androidWebView",
             presentScripts = mapOf("GOOGLE_PAY" to pressScript("gpay-button-online-api-id")),
+            readiness = mapOf(
+                "GOOGLE_PAY" to GooglePayReadinessSpec(
+                    allowedAuthMethods = listOf("CRYPTOGRAM_3DS"),
+                    allowedCardNetworks = listOf("VISA", "MASTERCARD", "AMEX", "DISCOVER"),
+                    existingPaymentMethodRequired = true,
+                ),
+            ),
             events = ::coinbaseEvents,
         ),
     )

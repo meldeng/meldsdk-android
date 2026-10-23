@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.ViewGroup
 import io.meld.sdk.MeldCapabilities
 import io.meld.sdk.MeldError
+import io.meld.sdk.MeldErrorCode
 import io.meld.sdk.MeldEvent
 import io.meld.sdk.MeldEventHandlers
 import io.meld.sdk.MeldMountException
@@ -267,13 +268,24 @@ internal class BanxaWebCheckoutPresenter : BanxaCheckoutPresenter {
             val error = detail?.get("error") as? Map<*, *>
             // Primer's payment-failure detail is {errorCode, errorMessage}; the generic bootstrap error
             // path uses {error:{code,message}}. Accept both rather than losing the reason.
-            val code = error?.get("code") as? String
+            val providerCode = error?.get("code") as? String
                 ?: detail?.get("errorCode") as? String
                 ?: "error"
             val message = error?.get("message") as? String
                 ?: detail?.get("errorMessage") as? String
                 ?: "Banxa checkout error"
-            return MeldError(orderId = orderId, code = code, message = message, detail = null, recoverable = false)
+            val code = when (providerCode) {
+                "sdk_unavailable" -> MeldErrorCode.PROVIDER_LOAD_FAILED.raw
+                "mount_failed", "checkout_init_failed" -> MeldErrorCode.PRESENTATION_FAILED.raw
+                else -> null
+            }
+            return MeldError(
+                orderId = orderId,
+                code = code ?: providerCode,
+                message = message,
+                detail = code?.let { "banxa_card_failed:$providerCode" },
+                recoverable = false,
+            )
         }
     }
 }

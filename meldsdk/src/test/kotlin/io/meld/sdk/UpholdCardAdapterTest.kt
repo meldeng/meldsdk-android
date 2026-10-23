@@ -40,7 +40,35 @@ class UpholdCardAdapterTest {
         val error = (events[0] as MeldEvent.Error).error
         assertEquals("card-declined", error.code)
         assertEquals("boom", error.message)
+        assertEquals(null, error.detail)
         assertEquals(false, error.recoverable)
+    }
+
+    @Test
+    fun sdkUnavailable_maps_to_ProviderLoadFailed_withTheBootstrapCodeInDetail() {
+        val events = UpholdCardAdapter.interpret(
+            mapOf("type" to "error", "detail" to mapOf("error" to mapOf("code" to "sdk_unavailable", "message" to "gone"))),
+            "order-1",
+        )
+        val error = (events.single() as MeldEvent.Error).error
+        assertEquals("PROVIDER_LOAD_FAILED", error.code)
+        assertEquals("uphold_card_failed:sdk_unavailable", error.detail)
+        assertEquals("gone", error.message)
+        assertTrue(error.attemptMayExist)
+    }
+
+    @Test
+    fun mountFailed_maps_to_PresentationFailed_onBothSteps_withTheBootstrapCodeInDetail() {
+        val message = mapOf("type" to "error", "detail" to mapOf("error" to mapOf("code" to "mount_failed", "message" to "threw")))
+        val authorize = (UpholdCardAdapter.interpret(message, "order-1").single() as MeldEvent.Error).error
+        val capture = (UpholdCardAdapter.interpretCapture(message).single() as MeldEvent.Error).error
+        for (error in listOf(authorize, capture)) {
+            assertEquals("PRESENTATION_FAILED", error.code)
+            assertEquals("uphold_card_failed:mount_failed", error.detail)
+            assertEquals("threw", error.message)
+            assertFalse(error.attemptMayExist)
+        }
+        assertEquals("order-1", authorize.orderId)
     }
 
     @Test

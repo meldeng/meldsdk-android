@@ -1,6 +1,9 @@
 package io.meld.demo
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
@@ -46,6 +49,7 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -57,9 +61,12 @@ import io.meld.sdk.Meld
 import io.meld.sdk.MeldEnvironment
 import io.meld.sdk.MeldEventHandlers
 import io.meld.sdk.MeldOrder
+import io.meld.sdk.MeldReadiness
 import io.meld.sdk.MeldStatus
 import io.meld.sdk.MeldWidgetHandle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 // A minimal example app for MeldSDK.
 //
@@ -120,6 +127,9 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
     val providers = remember { mutableStateListOf<DemoQuote>() }
     var selectedProvider by remember { mutableStateOf<String?>(null) }
     var paymentMethod by remember { mutableStateOf(PaymentMethods.first()) }
+    var readinessText by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val selectedPresentation = providers.firstOrNull { it.serviceProvider == selectedProvider }?.headlessPresentation
 
     val needsCustomerField = DemoConfig.meldCustomerId.isEmpty()
     val buyDisabled = creating || wallet.isBlank() || selectedProvider == null
@@ -154,6 +164,16 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
             receiveText = "≈ —"
             quoteNote = "quote failed: ${e.message}"
         }
+    }
+
+    // SDK: before creating the order, ask whether this device can pay with the quoted method.
+    LaunchedEffect(selectedPresentation, paymentMethod) {
+        readinessText = ""
+        val presentation = selectedPresentation ?: return@LaunchedEffect
+        val readiness = suspendCancellableCoroutine { continuation ->
+            Meld.presentationReadiness(context, presentation, paymentMethod.type) { continuation.resume(it) }
+        }
+        readinessText = describe(readiness)
     }
 
     fun buy() {
@@ -226,6 +246,9 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
             FieldLabel("Payment Method")
             PaymentMethods.forEach { method ->
                 ChoiceRow(method.label, selected = method == paymentMethod) { paymentMethod = method }
+            }
+            if (readinessText.isNotEmpty()) {
+                Text(readinessText, color = SubInk, fontSize = 13.sp)
             }
 
             Button(
@@ -352,13 +375,18 @@ private fun WidgetScreen(order: MeldOrder, events: EventLogState, onClose: () ->
             Text("Checkout", color = Color.White, fontWeight = FontWeight.Bold)
         }
 
-        // SDK: mount the order into a container view, passing your event handlers; unmount on dispose.
+        // SDK: mount an embedded widget into a container view, and a surface that draws into no view of
+        // yours (a wallet sheet) for the life of the Activity. Pass your event handlers; unmount on dispose.
         AndroidView(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             factory = { ctx ->
                 val container = FrameLayout(ctx)
                 try {
-                    container.tag = Meld.mount(order, container, events.handlers(onClose))
+                    container.tag = if (Meld.capabilities(order).embeddable) {
+                        Meld.mount(order, container, events.handlers(onClose))
+                    } else {
+                        Meld.mount(order, checkNotNull(ctx.activity()), events.handlers(onClose))
+                    }
                 } catch (e: Exception) {
                     events.record("mount failed: ${e.message}")
                 }
@@ -465,6 +493,21 @@ private class EventLogState {
         record("→ closing widget ($reason)")
         main.postDelayed({ onClose() }, 1500)
     }
+}
+
+private fun Context.activity(): Activity? {
+    var context: Context? = this
+    while (context is ContextWrapper) {
+        if (context is Activity) return context
+        context = context.baseContext
+    }
+    return null
+}
+
+private fun describe(readiness: MeldReadiness): String = when (readiness) {
+    MeldReadiness.Ready -> "Ready on this device"
+    is MeldReadiness.Unavailable -> "Unavailable here, hide it: ${readiness.reason}"
+    is MeldReadiness.Unknown -> "Could not tell, may offer: ${readiness.reason}"
 }
 
 /** Trim trailing zeros so amounts read cleanly (0.00021400 -> 0.000214). */

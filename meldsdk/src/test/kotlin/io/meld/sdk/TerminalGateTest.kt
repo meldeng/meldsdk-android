@@ -254,15 +254,45 @@ class TerminalGateTest {
         val codes = MeldErrorCode.entries.map { it.raw }
         assertEquals(
             listOf("PAYMENT_METHOD_UNAVAILABLE", "PRESENTATION_FAILED", "PAYMENT_REJECTED", "ORDER_STATE_CHANGED",
-                "PAYMENT_OUTCOME_UNKNOWN"),
+                "VERIFICATION_PENDING", "PAYMENT_OUTCOME_UNKNOWN", "PROVIDER_LOAD_FAILED"),
             codes,
         )
-        assertEquals(listOf(false, false, false, false, true), codes.map(MeldErrorCode::attemptMayExist))
-        for (code in listOf("PROVIDER_LOAD_FAILED", "APPLE_PAY_UNAVAILABLE", "authorize_session_failed", "LATER")) {
+        assertEquals(listOf(false, false, false, false, false, true, true), codes.map(MeldErrorCode::attemptMayExist))
+        for (code in listOf("PROVIDER_UNAVAILABLE", "APPLE_PAY_UNAVAILABLE", "authorize_session_failed", "LATER")) {
             assertTrue(code, MeldErrorCode.attemptMayExist(code))
         }
         assertFalse(MeldError("ord_1", MeldErrorCode.PAYMENT_REJECTED.raw, "x", null, false).attemptMayExist)
         assertTrue(MeldError("ord_1", MeldErrorCode.PAYMENT_OUTCOME_UNKNOWN.raw, "x", null, false).attemptMayExist)
+    }
+
+    @Test
+    fun `every error a mount reports carries the order's payment method`() {
+        val errors = mutableListOf<MeldError>()
+        val order = MeldOrder.fromMap(mapOf("id" to "ord_1", "paymentMethodType" to "GOOGLE_PAY"))
+        val handlers = MeldEventHandlers(onError = { errors += it }).forMount(order, TerminalGate())
+
+        handlers.onError?.invoke(MeldError("ord_1", MeldErrorCode.PROVIDER_LOAD_FAILED.raw, "offline", null, recoverable = true))
+        handlers.sessionEnded?.invoke("ord_1")
+
+        assertEquals(listOf("PROVIDER_LOAD_FAILED", "PAYMENT_OUTCOME_UNKNOWN"), errors.map { it.code })
+        assertEquals(listOf("GOOGLE_PAY", "GOOGLE_PAY"), errors.map { it.paymentMethodType })
+
+        val untyped = mutableListOf<MeldError>()
+        MeldEventHandlers(onError = { untyped += it }).forMount(MeldOrder.fromMap(emptyMap()), TerminalGate())
+            .onError?.invoke(MeldError("ord_1", "x", "x", null, recoverable = false))
+        assertEquals(null, untyped.single().paymentMethodType)
+    }
+
+    @Test
+    fun `a mount with no onError handler still treats an error as terminal`() {
+        val events = mutableListOf<String>()
+        val order = MeldOrder.fromMap(mapOf("paymentMethodType" to "GOOGLE_PAY"))
+        val handlers = MeldEventHandlers(onCancel = { events += "cancel" }).forMount(order, TerminalGate())
+
+        handlers.onError?.invoke(MeldError("ord_1", "x", "x", null, recoverable = false))
+        handlers.onCancel?.invoke("ord_1")
+
+        assertTrue(events.isEmpty())
     }
 
     @Test

@@ -4,7 +4,10 @@ import io.meld.sdk.MeldErrorMessage
 import io.meld.sdk.MeldEvent
 import io.meld.sdk.MeldOrder
 import io.meld.sdk.MeldStatus
+import io.meld.sdk.googlepay.GooglePayReadinessSpec
 import io.meld.sdk.isRegisteredWidgetUrl
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -28,6 +31,26 @@ class HostedLinkProfilesTest {
         assertEquals(setOf("https://pay.coinbase.com"), profile.origins)
         assertEquals("androidWebView", profile.channel)
         assertEquals(setOf("GOOGLE_PAY"), profile.presentScripts.keys)
+    }
+
+    @Test
+    fun `google pay readiness asks what the page's card-required request asks, and only for presented methods`() {
+        val captured = JSONObject(javaClass.getResource("coinbase-payment-link-v1-payment-requests.json")!!.readText())
+            .getJSONArray("requests").objects()
+            .filter { it.getString("supportedMethods") == "https://google.com/pay" }
+        fun GooglePayReadinessSpec.asks(request: JSONObject): Boolean {
+            val card = request.getJSONArray("allowedPaymentMethods").objects().single { it.getString("type") == "CARD" }
+            return card.getJSONArray("authMethods").strings() == allowedAuthMethods &&
+                card.getJSONArray("networks").strings() == allowedCardNetworks
+        }
+        val spec = profile.readiness.getValue("GOOGLE_PAY")
+
+        assertTrue(spec.existingPaymentMethodRequired)
+        assertTrue(spec.asks(captured.single { it.optBoolean("existingPaymentMethodRequired") }))
+        assertTrue(captured.filter { it.has("merchantName") }.all { spec.asks(it) })
+        for (each in HostedLinkProfiles.all) {
+            assertTrue(each.protocol, each.presentScripts.keys.containsAll(each.readiness.keys))
+        }
     }
 
     @Test
@@ -143,4 +166,8 @@ class HostedLinkProfilesTest {
             assertEquals(url, pinned, isRegisteredWidgetUrl(url, profile.origins))
         }
     }
+
+    private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { getJSONObject(it) }
+
+    private fun JSONArray.strings(): List<String> = (0 until length()).map { getString(it) }
 }

@@ -42,6 +42,10 @@ android {
 dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.annotation)
+    implementation(libs.play.services.wallet) {
+        // Wallet declares Maps but never calls it, and Maps' manifest requires OpenGL ES 2 of every app.
+        exclude(group = "com.google.android.gms", module = "play-services-maps")
+    }
 
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
