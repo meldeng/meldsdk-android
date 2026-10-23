@@ -1,5 +1,6 @@
 package io.meld.demo
 
+import io.meld.sdk.MeldEnvironment
 import io.meld.sdk.MeldHeadlessPresentation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,6 +23,14 @@ object DemoConfig {
     /** API host. Defaults to sandbox; set MELD_API_HOST (e.g. `api-qa.meld.io`) for another env. */
     val apiBase: String
         get() = "https://" + BuildConfig.MELD_API_HOST.ifEmpty { "api-sb.meld.io" }
+
+    /** The SDK environment matching [apiBase]: configure the backend that creates the order. */
+    val environment: MeldEnvironment
+        get() = when (BuildConfig.MELD_API_HOST) {
+            "api-qa.meld.io" -> MeldEnvironment.QA
+            "api.meld.io" -> MeldEnvironment.PRODUCTION
+            else -> MeldEnvironment.SANDBOX
+        }
 
     const val VERSION = "2026-05-01"
 

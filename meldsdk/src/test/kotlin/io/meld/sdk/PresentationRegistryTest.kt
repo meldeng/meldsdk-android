@@ -136,6 +136,38 @@ class PresentationRegistryTest {
         assertThrows(IllegalArgumentException::class.java) { MeldAdapterRegistry(listOf(synthetic, synthetic)) }
     }
 
+    @Test fun a_declared_order_its_adapter_refuses_is_unsupported_and_never_falls_back_to_legacy() {
+        val asked = mutableListOf<MeldOrder>()
+        val strict = object : MeldAdapter {
+            override val label = "Strict"
+            override val capabilities = MeldCapabilities(true, "strict", false)
+            override val presentations = listOf(AdapterPresentation("CREDIT_DEBIT_CARD",
+                presentation.copy(protocol = "STRICT_PROTOCOL")))
+            override fun acceptsDeclaredOrder(order: MeldOrder): Boolean {
+                asked += order
+                return order.paymentMethodResponseDetails?.get("required") == true
+            }
+            override fun matches(paymentMethodType: String?, renderMode: String?, widgetUrl: String?) = true
+            override fun mount(order: MeldOrder, host: ViewGroup, handlers: MeldEventHandlers): MeldProviderSession =
+                error("Pure registry test must not mount")
+        }
+        val registry = MeldAdapterRegistry(listOf(strict) + Meld.adapters)
+        fun declared(details: Map<String, Any?>) = MeldOrder.fromMap(mapOf("paymentMethodType" to "CREDIT_DEBIT_CARD",
+            "headlessPresentation" to (descriptor() + ("protocol" to "STRICT_PROTOCOL")),
+            "paymentMethodResponseDetails" to details))
+
+        val refused = declared(mapOf("renderMode" to "IFRAME", "serviceProviderWidgetUrl" to "https://sandbox-exchange.mrcr.io/"))
+        assertNull(registry.adapter(refused))
+        assertSame(refused, asked.single())
+        val accepted = declared(mapOf("required" to true))
+        assertSame(strict, registry.adapter(accepted))
+        assertSame(strict, registry.adapter(presentation.copy(protocol = "STRICT_PROTOCOL"), "CREDIT_DEBIT_CARD"))
+
+        val legacy = MeldOrder.fromMap(mapOf("paymentMethodType" to "CREDIT_DEBIT_CARD"))
+        assertSame(strict, registry.adapter(legacy))
+        assertEquals(2, asked.size)
+    }
+
     @Test fun legacy_selection_requires_recognized_https_origins() {
         for ((url, supported) in listOf("https://sandbox-exchange.mrcr.io/" to true,
             "https://payment-widget.enterprise.uphold.com/" to true,

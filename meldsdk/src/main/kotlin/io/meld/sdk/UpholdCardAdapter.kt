@@ -210,16 +210,13 @@ internal class UpholdCardAdapter : MeldAdapter {
     }
 
     private fun warnIfEnvironmentMismatch(host: String?) {
-        if (host == null) return
-        val orderEnv = hostsByEnvironment.entries
-            .firstOrNull { it.value.contains(host) }?.key ?: return
-        if (orderEnv != Meld.environment) {
-            Log.w(
-                TAG,
-                "order environment is '${orderEnv.raw}' but Meld.configure set " +
-                    "'${Meld.environment.raw}'. Configure the matching environment to silence this.",
-            )
-        }
+        val configured = Meld.environment
+        val orderEnv = environmentMismatch(host, configured) ?: return
+        Log.w(
+            TAG,
+            "order environment is '${orderEnv.raw}' but Meld.configure set " +
+                "'${configured.raw}'. Configure the matching environment to silence this.",
+        )
     }
 
     private fun loadBundle(context: Context): String {
@@ -419,6 +416,13 @@ internal class UpholdCardAdapter : MeldAdapter {
         // session url, which is the API host).
         private val hostsByEnvironment: Map<MeldEnvironment, Set<String>> =
             apiHostsByEnvironment.mapValues { (env, api) -> api + widgetHostsByEnvironment.getValue(env) }
+
+        /** The provider environment [host] belongs to, when [configured] does not run on it. */
+        @VisibleForTesting
+        internal fun environmentMismatch(host: String?, configured: MeldEnvironment): MeldEnvironment? {
+            val orderEnv = hostsByEnvironment.entries.firstOrNull { host in it.value }?.key ?: return null
+            return orderEnv.takeIf { it != configured.providerEnvironment }
+        }
 
         // Both the bootstrap page origin (widget host) and the Uphold iframe/API origins are trusted.
         internal val allowedOrigins: Set<String> =
