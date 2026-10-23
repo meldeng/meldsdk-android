@@ -320,13 +320,22 @@ logs the reason under the `MeldSDK` tag.
 - The `org.chromium.intent.action.PAY`, `IS_READY_TO_PAY` and `UPDATE_PAYMENT_DETAILS` package
   queries, through which the page's Payment Request reaches Google Pay.
 - Google Play services Wallet (`com.google.android.gms:play-services-wallet` 20.0.0), for readiness
-  only. An app that excludes it still mounts Google Pay orders, and readiness then answers
-  `Unknown`. Your merged manifest gains the `com.google.android.gms.wallet.api.enabled` and
+  only. Your merged manifest gains the `com.google.android.gms.wallet.api.enabled` and
   `com.google.android.gms.version` meta-data and the non-exported
-  `com.google.android.gms.common.api.GoogleApiActivity`.
-- Nothing from Google Maps. Wallet declares `play-services-maps` but never calls it, so the SDK
-  excludes it, and your merged manifest gains none of Maps' entries, such as the OpenGL ES 2
-  `uses-feature` with `required="true"`. An app that uses Maps keeps its own dependency on it.
+  `com.google.android.gms.common.api.GoogleApiActivity`. You can leave Wallet out:
+
+  ```kotlin
+  implementation("io.meld:meldsdk:<version>") {
+      exclude(group = "com.google.android.gms", module = "play-services-wallet")
+  }
+  ```
+
+  Google Pay orders still mount, and readiness answers `Unknown`. A minified build needs no rules of
+  your own: the SDK's consumer R8 rules let Wallet be missing.
+- Nothing from Google Maps. Wallet uses `play-services-maps` only for the `LatLng` of its loyalty,
+  offer and gift card objects, which the SDK never builds, so the SDK excludes it, and your merged
+  manifest gains none of Maps' entries, such as the OpenGL ES 2 `uses-feature` with
+  `required="true"`. An app that uses Maps keeps its own dependency on it.
 
 ### Troubleshooting
 
