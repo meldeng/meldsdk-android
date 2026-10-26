@@ -46,6 +46,9 @@ internal interface MeldAdapter {
     /** Whether this device can pay [query]'s method before an order exists. Answer once, from any thread. */
     fun readiness(query: ReadinessQuery, onResult: (MeldReadiness) -> Unit) = onResult(capabilityReadiness(capabilities))
 
+    /** Validates a declared order's required payload before the registry selects this adapter for it. */
+    fun acceptsDeclaredOrder(order: MeldOrder): Boolean = true
+
     /**
      * Whether this adapter handles the given order discriminators. [widgetUrl] lets an adapter
      * distinguish providers that share a (paymentMethodType, renderMode) — e.g. two `IFRAME` card

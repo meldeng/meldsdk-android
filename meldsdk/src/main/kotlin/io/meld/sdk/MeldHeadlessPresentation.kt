@@ -49,6 +49,8 @@ internal class MeldAdapterRegistry(adapters: List<MeldAdapter>) {
     fun adapter(order: MeldOrder): MeldAdapter? = when (val declaration = order.presentationDeclaration) {
         PresentationDeclaration.Absent -> legacy.firstOrNull { it.matches(order) }
         PresentationDeclaration.Invalid -> null
-        is PresentationDeclaration.Declared -> order.paymentMethodType?.let { adapter(declaration.value, it) }
+        is PresentationDeclaration.Declared -> order.paymentMethodType
+            ?.let { adapter(declaration.value, it) }
+            ?.takeIf { it.acceptsDeclaredOrder(order) }
     }
 }

@@ -198,6 +198,39 @@ HTTPS widget origins (no URL credentials or nonstandard ports); Banxa keeps its 
 signature. Widget origin checks also apply when mounting a declared protocol. Arbitrary iframe
 orders no longer default to Mercuryo. Integrators must not strip metadata to force fallback.
 
+## Coinme card (`COINME_VAULT`)
+
+A Coinme card order (`VENDOR_SDK / COINME_VAULT / 1`, `CREDIT_DEBIT_CARD`) runs Coinme's checkout in a
+WebView inside `host`, the way Banxa's card checkout runs: the bundled Meld web SDK shows the
+customer's saved Coinme cards and "Use a new card", Coinme's secure card fields (VGS iframes, so card
+data never reaches this SDK or your app) and Coinme's Risk session. No Coinme library is added to your
+app. `Meld.capabilities(order)` reports it only when the order declares both
+`CREATE_CUSTOMER_AUTH_TOKEN` and `CREATE_PAYMENT_SESSION` payment actions and its Coinme environment
+matches `Meld.configure` (`live` with `PRODUCTION`, `sandbox` otherwise). Configure
+`MeldEnvironment.QA` for orders created on Meld's QA API.
+
+- Give `host` a visible size. `onReady` fires once the device is tagged and the cards or the form are
+  showing.
+- The checkout's payment actions go through the SDK to the order's own endpoint with the order's
+  bearer; your API key is never involved.
+- `onPaymentSubmitted` fires once Coinme accepts the payment. A card that was just added is verified by
+  Coinme for about a minute; the checkout shows "Verifying your card…" and keeps trying for up to three
+  minutes, then reports `VERIFICATION_PENDING` (no payment was attempted).
+- A declined card reports `PAYMENT_REJECTED`; an interrupted submission reports
+  `PAYMENT_OUTCOME_UNKNOWN` (track the order, never pay it again). Settlement is still the webhook.
+
+Google Play Data Safety: declare what Coinme's checkout collects, shared with Coinme (and its
+processors VGS and Sardine), encrypted in transit:
+
+| Data type | Collected for | Notes |
+|---|---|---|
+| Financial info: payment info | App functionality (payments) | Card number, expiry and CVC, captured by Coinme's secure fields |
+| Personal info: name, address | App functionality, fraud prevention | Billing name, address and state |
+| Device or other IDs | Fraud prevention, security | Device fingerprint and Risk session |
+| App activity: app interactions | Fraud prevention, security | Typing and touch behaviour on the form |
+
+Link Coinme's privacy policy from your app's privacy policy.
+
 ## Google Pay
 
 Google Pay runs through the provider's own payment page (Coinbase, protocol

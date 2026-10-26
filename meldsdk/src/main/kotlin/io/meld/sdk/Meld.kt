@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.util.Log
 import android.view.ViewGroup
+import io.meld.sdk.coinme.CoinmeCardAdapter
 import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import io.meld.sdk.hosted.MainScheduler
 import org.json.JSONArray
@@ -20,6 +21,7 @@ import org.json.JSONObject
 
 enum class MeldEnvironment(val raw: String) {
     SANDBOX("sandbox"),
+    QA("qa"),
     PRODUCTION("production"),
 }
 
@@ -40,6 +42,8 @@ class MeldOrder private constructor(
     val serviceProvider: String?,
     val paymentMethodResponseDetails: Details?,
     internal val presentationDeclaration: PresentationDeclaration,
+    /** The whole order as returned, for contract fields addressed by pointer (e.g. `paymentActions`). */
+    internal val raw: Map<String, Any?>,
 ) {
     val headlessPresentation: MeldHeadlessPresentation?
         get() = (presentationDeclaration as? PresentationDeclaration.Declared)?.value
@@ -90,6 +94,7 @@ class MeldOrder private constructor(
                 serviceProvider = payload?.get("serviceProvider") as? String,
                 paymentMethodResponseDetails = details,
                 presentationDeclaration = PresentationDeclaration.decode(dict),
+                raw = dict,
             )
         }
     }
@@ -213,6 +218,7 @@ object Meld {
         BanxaCardAdapter(),
         MercuryoCardAdapter(),
         HostedWalletLinkAdapter(),
+        CoinmeCardAdapter(),
     )
 
     private val registry = MeldAdapterRegistry(adapters)

@@ -2,6 +2,7 @@ package io.meld.sdk
 
 import android.app.Activity
 import android.view.ViewGroup
+import io.meld.sdk.coinme.CoinmeCardAdapter
 import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import org.junit.Assert.*
 import org.junit.Test
@@ -48,7 +49,8 @@ class PresentationRegistryTest {
             assertEquals(adapter.capabilities, Meld.presentationCapabilities(key.presentation, key.paymentMethodType))
             val declared = order(mapOf("surface" to key.presentation.surface,
                 "protocol" to key.presentation.protocol, "version" to key.presentation.version), key.paymentMethodType)
-            assertSame(adapter, Meld.adapterFor(declared))
+            // A Coinme order needs its session data and payment actions as well; CoinmeOrderTest covers it.
+            assertSame(adapter.takeUnless { it is CoinmeCardAdapter }, Meld.adapterFor(declared))
             assertFalse(Meld.presentationCapabilities(key.presentation.copy(version = 2), key.paymentMethodType).embeddable)
             assertFalse(Meld.presentationCapabilities(key.presentation, "APPLE_PAY").embeddable)
         }
@@ -112,7 +114,8 @@ class PresentationRegistryTest {
     }
 
     @Test fun an_activity_mount_refuses_an_order_that_renders_into_a_view() {
-        for (adapter in Meld.adapters.filter { it.capabilities.embeddable }) for (key in adapter.presentations) {
+        // A Coinme order needs its session data and payment actions as well; CoinmeOrderTest covers it.
+        for (adapter in Meld.adapters.filter { it.capabilities.embeddable && it !is CoinmeCardAdapter }) for (key in adapter.presentations) {
             val declared = order(mapOf("surface" to key.presentation.surface,
                 "protocol" to key.presentation.protocol, "version" to key.presentation.version), key.paymentMethodType)
             val error = assertThrows(MeldMountException.MissingHost::class.java) { Meld.mount(declared, Activity()) }
