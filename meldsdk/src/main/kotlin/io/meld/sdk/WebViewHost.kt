@@ -208,8 +208,10 @@ internal class WebViewHost(
         host.addView(web)
         if (htmlContent != null) {
             // [url] is the base URL: it sets the page origin so the origin-scoped bridge injects
-            // window.meld and so the provider SDK's iframe is same-origin with the widget host.
-            web.loadDataWithBaseURL(url, htmlContent, "text/html", "utf-8", null)
+            // window.meld and so the provider SDK's iframe is same-origin with the widget host. A pinned
+            // page also takes [url] as its history entry, which WebView.url reports instead of
+            // about:blank, so evaluateJavascript recognizes it.
+            web.loadDataWithBaseURL(url, htmlContent, "text/html", "utf-8", url.takeIf { mainFrameHosts.isNotEmpty() })
         } else {
             web.loadUrl(url)
         }
