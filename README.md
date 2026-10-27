@@ -56,6 +56,11 @@ if (capabilities.surface != "unsupported") {
 }
 ```
 
+Configure the Meld backend your server created the order on: `SANDBOX` (`api-sb.meld.io`), `QA`
+(`api-qa.meld.io`) or `PRODUCTION` (`api.meld.io`). The SDK checks a `QA` order's provider hosts
+as it checks a `SANDBOX` one. `QA` is a new entry, so an exhaustive `when` over `MeldEnvironment`
+with no `else` branch needs a `QA` case.
+
 Branch only on two things:
 
 - **`capabilities.surface == "unsupported"`:** this SDK build cannot present the order here. Do not

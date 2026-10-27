@@ -65,12 +65,14 @@ class GooglePayReadinessTest {
     }
 
     @Test
-    fun `no card in sandbox is unknown, since the order may run Google's TEST environment`() {
-        val noCard = googlePayReadiness(Result.success(false), spec, SANDBOX) as MeldReadiness.Unknown
-        assertTrue(noCard.reason, noCard.reason.contains("TEST"))
+    fun `no card in sandbox or qa is unknown, since the order may run Google's TEST environment`() {
+        for (environment in listOf(SANDBOX, MeldEnvironment.QA)) {
+            val noCard = googlePayReadiness(Result.success(false), spec, environment) as MeldReadiness.Unknown
+            assertTrue(noCard.reason, noCard.reason.contains("TEST"))
 
-        val noWallet = googlePayReadiness(Result.success(false), spec.copy(existingPaymentMethodRequired = false), SANDBOX)
-        assertEquals(MeldErrorCode.PAYMENT_METHOD_UNAVAILABLE, (noWallet as MeldReadiness.Unavailable).code)
+            val noWallet = googlePayReadiness(Result.success(false), spec.copy(existingPaymentMethodRequired = false), environment)
+            assertEquals(MeldErrorCode.PAYMENT_METHOD_UNAVAILABLE, (noWallet as MeldReadiness.Unavailable).code)
+        }
     }
 
     @Test
