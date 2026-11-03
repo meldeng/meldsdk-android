@@ -10,10 +10,10 @@ import io.meld.sdk.MeldEventHandlers
 import io.meld.sdk.MeldMountException
 import io.meld.sdk.MeldProviderSession
 import io.meld.sdk.WebViewHost
+import io.meld.sdk.actions.MAX_ACTION_BODY_BYTES
 import io.meld.sdk.actions.PaymentActionClient
-import io.meld.sdk.actions.PaymentActionDescriptor
 import io.meld.sdk.actions.PaymentActionResponse
-import io.meld.sdk.actions.isOne
+import io.meld.sdk.actions.strictInt
 import io.meld.sdk.toMap
 import org.json.JSONArray
 import org.json.JSONException
@@ -54,7 +54,7 @@ internal class CoinmeWebCheckout(
         return object : MeldProviderSession {
             override fun unmount() {
                 page = null
-                actions.close()
+                actions.finish()
                 session.unmount()
             }
         }
@@ -67,7 +67,9 @@ internal class CoinmeWebCheckout(
         if (request == null) {
             reply(id, null)
         } else {
-            actions.send(request.operation, request.fields, request.idempotencyKey) { reply(id, it) }
+            actions.run({ actions.relay(request.operation, request.fields, request.idempotencyKey) }) {
+                reply(id, it.getOrNull())
+            }
         }
         return emptyList()
     }
@@ -198,14 +200,14 @@ internal class CoinmeWebCheckout(
         /** The operation, fields and idempotency key of a page's action, or null for a malformed one. */
         internal fun actionRequest(message: Map<String, Any?>): ActionRequest? {
             val body = message["body"] as? String ?: return null
-            if (body.length > PaymentActionDescriptor.BODY_LIMIT) return null
+            if (body.length > MAX_ACTION_BODY_BYTES) return null
             val json = try {
                 JSONObject(body).toMap()
             } catch (_: JSONException) {
                 return null
             }
             val operation = json["operation"] as? String ?: return null
-            if (!isOne(json["version"])) return null
+            if (strictInt(json["version"]) != 1) return null
             val idempotencyKey = when (val key = (message["headers"] as? Map<*, *>)?.get("X-Idempotency-Key")) {
                 null -> null
                 is String -> try {

@@ -43,11 +43,14 @@ internal interface MeldAdapter {
     /** What this adapter can do with a matching order. */
     val capabilities: MeldCapabilities
 
+    /**
+     * Whether a declared order carries the payload and transport its protocol needs. Checked before the
+     * registry reports this adapter, so [Meld.capabilities] never promises an order that [mount] refuses.
+     */
+    fun acceptsDeclaredOrder(order: MeldOrder): Boolean = true
+
     /** Whether this device can pay [query]'s method before an order exists. Answer once, from any thread. */
     fun readiness(query: ReadinessQuery, onResult: (MeldReadiness) -> Unit) = onResult(capabilityReadiness(capabilities))
-
-    /** Validates a declared order's required payload before the registry selects this adapter for it. */
-    fun acceptsDeclaredOrder(order: MeldOrder): Boolean = true
 
     /**
      * Whether this adapter handles the given order discriminators. [widgetUrl] lets an adapter

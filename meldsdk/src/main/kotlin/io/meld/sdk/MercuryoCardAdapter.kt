@@ -52,16 +52,13 @@ internal class MercuryoCardAdapter : MeldAdapter {
     }
 
     private fun warnIfEnvironmentMismatch(widgetHost: String?) {
-        if (widgetHost == null) return
-        val orderEnv = hostsByEnvironment.entries
-            .firstOrNull { it.value.contains(widgetHost) }?.key ?: return
-        if (orderEnv != Meld.environment) {
-            Log.w(
-                TAG,
-                "order environment is '${orderEnv.raw}' but Meld.configure set " +
-                    "'${Meld.environment.raw}'. Configure the matching environment to silence this.",
-            )
-        }
+        val configured = Meld.environment
+        val orderEnv = environmentMismatch(widgetHost, configured) ?: return
+        Log.w(
+            TAG,
+            "order environment is '${orderEnv.raw}' but Meld.configure set " +
+                "'${configured.raw}'. Configure the matching environment to silence this.",
+        )
     }
 
     companion object {
@@ -133,6 +130,13 @@ internal class MercuryoCardAdapter : MeldAdapter {
         }
 
         // MARK: - Environment sanity check
+
+        /** The provider environment [widgetHost] belongs to, when [configured] does not run on it. */
+        @VisibleForTesting
+        internal fun environmentMismatch(widgetHost: String?, configured: MeldEnvironment): MeldEnvironment? {
+            val orderEnv = hostsByEnvironment.entries.firstOrNull { widgetHost in it.value }?.key ?: return null
+            return orderEnv.takeIf { it != configured.providerEnvironment }
+        }
 
         // Recognized widget URL hosts per environment. The order's signed URL is authoritative;
         // this lets the SDK flag a configured environment that doesn't match the order.

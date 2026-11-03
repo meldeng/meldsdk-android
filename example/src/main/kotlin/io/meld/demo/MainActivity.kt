@@ -58,7 +58,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import io.meld.sdk.Meld
-import io.meld.sdk.MeldEnvironment
 import io.meld.sdk.MeldEventHandlers
 import io.meld.sdk.MeldOrder
 import io.meld.sdk.MeldReadiness
@@ -144,7 +143,7 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
 
     // On appear and per payment method: configure the SDK and fetch live quotes (one per provider) to choose from.
     LaunchedEffect(paymentMethod) {
-        Meld.configure(MeldEnvironment.SANDBOX) // SDK: one-time setup
+        Meld.configure(DemoConfig.environment) // SDK: one-time setup, matching the order's backend
         providers.clear()
         selectedProvider = null
         if (DemoConfig.meldApiKey.isEmpty()) {

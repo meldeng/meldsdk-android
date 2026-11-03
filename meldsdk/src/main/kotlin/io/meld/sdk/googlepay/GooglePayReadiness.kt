@@ -9,6 +9,7 @@ import io.meld.sdk.MeldEnvironment
 import io.meld.sdk.MeldErrorCode
 import io.meld.sdk.MeldReadiness
 import io.meld.sdk.MeldReadinessReason
+import io.meld.sdk.providerEnvironment
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -60,7 +61,8 @@ internal class GooglePayReadiness(
 
 /**
  * With existingPaymentMethodRequired, Android's single answer is already "ready and a card is present".
- * Only production is asked, so in [MeldEnvironment.SANDBOX] a missing card is [MeldReadiness.Unknown].
+ * Only production is asked, so in [MeldEnvironment.SANDBOX] and [MeldEnvironment.QA], where an order
+ * may run Google's TEST environment, a missing card is [MeldReadiness.Unknown].
  */
 internal fun googlePayReadiness(
     result: Result<Boolean>,
@@ -72,7 +74,7 @@ internal fun googlePayReadiness(
     }
     return when {
         ready -> MeldReadiness.Ready
-        spec.existingPaymentMethodRequired && environment == MeldEnvironment.SANDBOX -> MeldReadiness.Unknown(
+        spec.existingPaymentMethodRequired && environment.providerEnvironment == MeldEnvironment.SANDBOX -> MeldReadiness.Unknown(
             "Google Pay reports no card for this payment in production, and a sandbox order may run " +
                 "Google's TEST environment, which that answer does not cover.",
         )
