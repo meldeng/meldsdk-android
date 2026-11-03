@@ -1,181 +1,164 @@
 package io.meld.sdk.actions
 
-import io.meld.sdk.MeldEnvironment
-import io.meld.sdk.MeldOrder
+import io.meld.sdk.actions.ActionFixtures.descriptor
+import io.meld.sdk.hosted.VirtualClock
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
+import java.net.URL
 import java.util.UUID
 
 class PaymentActionClientTest {
-    private val endpoint = "/crypto/order/headless/onramp/COINME/ord_1/actions"
-    private val pointer = "/paymentMethodResponseDetails/continuationToken"
+    private val opened = mutableListOf<FakeConnection>()
 
-    private fun op(name: Any?, required: Any?) = mapOf("operation" to name, "idempotencyKeyRequired" to required)
+    private fun client(make: (URL) -> FakeConnection = { FakeConnection(it) }) =
+        PaymentActionClient(descriptor(), ActionQueue(DirectExecutor(), VirtualClock())) { url -> make(url).also { opened += it } }
 
-    private fun actions(
-        endpoint: Any? = this.endpoint,
-        pointer: Any? = this.pointer,
-        operations: Any? = listOf(op("CREATE_PAYMENT_SESSION", true), op("READ_STATUS", false)),
-        version: Any? = 1,
-    ) = mapOf("version" to version, "endpoint" to endpoint, "bearerTokenPointer" to pointer, "operations" to operations)
+    private fun answer(status: Int, json: Any?) = client { FakeConnection(it, status, json?.toString()?.toByteArray()) }
 
-    private fun order(
-        actions: Map<String, Any?> = actions(),
-        id: String? = "ord_1",
-        provider: String? = "COINME",
-        token: Any? = "jwt.bearer.token",
-    ) = MeldOrder.fromMap(mapOf(
-        "id" to id,
-        "payload" to mapOf("serviceProvider" to provider),
-        "paymentMethodResponseDetails" to mapOf("continuationToken" to token),
-        "paymentActions" to actions,
-    ))
+    private fun failure(client: PaymentActionClient, operation: String = "READ_SUBMISSION", key: UUID? = null): PaymentActionException =
+        assertThrows(PaymentActionException::class.java) { client.execute(operation, emptyMap(), key) }
 
-    private fun descriptor(order: MeldOrder = order(), environment: MeldEnvironment = MeldEnvironment.SANDBOX) =
-        PaymentActionDescriptor.parse(order, environment)
-
-    private fun client(transport: PaymentActionTransport) = PaymentActionClient(descriptor()!!, transport)
-
-    @Test
-    fun `a declared endpoint on the environment's API host carries the order's bearer`() {
+    @Test fun sends_exactly_the_declared_request_without_redirects_caches_or_extra_headers() {
         val key = UUID.randomUUID()
-        val descriptor = descriptor()!!
-        val request = descriptor.request("CREATE_PAYMENT_SESSION", mapOf("paymentToken" to "pm_1"), key)
+        val client = client { FakeConnection(it, response = """{"version":1,"status":"SYNTHETIC_STATUS"}""".toByteArray()) }
 
-        assertEquals("https://api-sb.meld.io$endpoint", request.url.toString())
-        assertEquals("Bearer jwt.bearer.token", request.headers["Authorization"])
-        assertEquals(key.toString(), request.headers["X-Idempotency-Key"])
-        assertEquals("application/json", request.headers["Content-Type"])
-        assertEquals("no-store", request.headers["Cache-Control"])
-        val body = JSONObject(String(request.body))
-        assertEquals(1, body.getInt("version"))
-        assertEquals("CREATE_PAYMENT_SESSION", body.getString("operation"))
-        assertEquals("pm_1", body.getString("paymentToken"))
-        assertFalse(descriptor.toString().contains("jwt"))
-        assertFalse(request.toString().contains("jwt"))
+        val answer = client.execute("SUBMIT_WALLET_PAYMENT", mapOf("walletPayment" to mapOf("token" to "t")), key)
+
+        assertEquals(mapOf("version" to 1, "status" to "SYNTHETIC_STATUS"), answer)
+        val connection = opened.single()
+        assertEquals(ActionFixtures.URL, connection.url.toString())
+        assertEquals("POST", connection.requestMethod)
+        assertTrue(connection.doOutput)
+        assertFalse(connection.instanceFollowRedirects)
+        assertFalse(connection.useCaches)
+        assertEquals(15_000, connection.connectTimeout)
+        assertEquals(30_000, connection.readTimeout)
+        assertEquals(
+            mapOf("Content-Type" to "application/json", "Accept" to "application/json", "Cache-Control" to "no-store",
+                "Authorization" to "Bearer synthetic-session", "X-Idempotency-Key" to key.toString().lowercase()),
+            connection.headers,
+        )
+        val body = connection.sent.toByteArray()
+        assertEquals(body.size, connection.fixedLength)
+        val sent = JSONObject(String(body))
+        assertEquals(setOf("version", "operation", "walletPayment"), sent.keySet())
+        assertEquals("SUBMIT_WALLET_PAYMENT", sent.getString("operation"))
+        assertEquals(1, connection.disconnected)
     }
 
-    @Test
-    fun `an idempotency key goes only with an operation that declares one`() {
-        val descriptor = descriptor()!!
+    @Test fun a_read_carries_no_idempotency_key() {
+        val client = client()
+        client.execute("READ_SUBMISSION", emptyMap(), null)
+        assertFalse(opened.single().headers.containsKey("X-Idempotency-Key"))
+        assertEquals("""{"version":1,"operation":"READ_SUBMISSION"}""", String(opened.single().sent.toByteArray()))
+    }
+
+    @Test fun an_undeclared_request_never_opens_a_connection() {
+        assertSame(PaymentActionException.InvalidRequest, failure(client(), "UNKNOWN"))
+        assertSame(PaymentActionException.InvalidRequest, failure(client(), "SUBMIT_WALLET_PAYMENT"))
+        assertSame(PaymentActionException.InvalidRequest, failure(client(), "READ_SUBMISSION", UUID.randomUUID()))
+        assertTrue(opened.isEmpty())
+    }
+
+    @Test fun a_redirect_is_refused_and_reported_as_its_status() {
+        for (status in listOf(301, 302, 303, 307, 308)) {
+            val error = failure(answer(status, null))
+            assertEquals("http($status)", error.toString())
+        }
+        assertEquals(5, opened.size)
+        assertTrue(opened.all { !it.instanceFollowRedirects && it.disconnected == 1 })
+    }
+
+    @Test fun error_bodies_never_surface() {
+        val error = failure(answer(400, JSONObject(mapOf("secret" to "synthetic-sensitive-response"))))
+        assertEquals("http(400)", error.toString())
+        assertEquals(null, error.message)
+        assertFalse(error.toString().contains("synthetic"))
+        assertEquals("http(500)", failure(answer(500, "not json")).toString())
+        assertEquals("http(404)", failure(answer(404, null)).toString())
+    }
+
+    @Test fun a_normalized_code_needs_version_1_a_known_code_and_its_own_status() {
+        val conflict = JSONObject(mapOf("version" to 1, "code" to "REQUEST_CONFLICT", "detail" to "synthetic-private"))
+        assertEquals("action:REQUEST_CONFLICT", failure(answer(409, conflict)).toString())
+        assertEquals("http(401)", failure(answer(401, conflict)).toString())
+        assertEquals("http(409)", failure(answer(409, JSONObject(mapOf("version" to 2, "code" to "REQUEST_CONFLICT")))).toString())
+        assertEquals("action:OPERATION_IN_FLIGHT",
+            failure(answer(425, JSONObject(mapOf("version" to 1, "code" to "OPERATION_IN_FLIGHT")))).toString())
+    }
+
+    @Test fun a_success_must_be_a_version_1_object() {
+        for (body in listOf("""{"version":2}""", """{"version":true}""", """{"status":"SUBMITTED"}""", """{"version":"1"}""",
+            "[1]", "not json", "")) {
+            assertSame(body, PaymentActionException.InvalidResponse, failure(answer(200, body)))
+        }
+        assertEquals(mapOf("version" to 1), client { FakeConnection(it, 201) }.execute("READ_SUBMISSION", emptyMap(), null))
+        assertSame(PaymentActionException.InvalidResponse, failure(answer(-1, null)))
+    }
+
+    @Test fun responses_are_bounded_at_64_kib_and_reading_stops_one_byte_past_it() {
+        val envelope = """{"version":1,"pad":""}""".length
+        val fits = """{"version":1,"pad":"${"x".repeat(65_536 - envelope)}"}"""
+        assertEquals(1, answer(200, fits).execute("READ_SUBMISSION", emptyMap(), null)["version"])
+
+        val huge = """{"version":1,"pad":"${"x".repeat(1_000_000)}"}"""
+        assertSame(PaymentActionException.InvalidResponse, failure(answer(200, huge)))
+        assertEquals(65_537, opened.last().bytesRead)
+        assertEquals("http(400)", failure(answer(400, """{"version":1,"code":"INVALID_REQUEST","pad":"${"x".repeat(70_000)}"}""")).toString())
+        assertEquals(65_537, opened.last().bytesRead)
+    }
+
+    @Test fun every_io_failure_is_a_transport_failure_and_always_disconnects() {
+        for (stage in listOf("connect", "write", "status", "read")) {
+            assertSame(stage, PaymentActionException.Transport, failure(client { FakeConnection(it, failAt = stage) }))
+        }
+        assertTrue(opened.all { it.disconnected == 1 })
+        assertSame(PaymentActionException.Transport, failure(PaymentActionClient(descriptor(), ActionQueue(DirectExecutor(), VirtualClock())) { throw IOException("synthetic") }))
+        assertSame(PaymentActionException.Transport, failure(PaymentActionClient(descriptor(), ActionQueue(DirectExecutor(), VirtualClock())) { throw SecurityException("synthetic") }))
+    }
+
+    @Test fun a_relay_returns_the_response_undecoded_and_nothing_when_there_is_none() {
+        val rejected = """{"version":1,"code":"PROVIDER_REJECTED"}"""
+        val relayed = answer(422, rejected).relay("SUBMIT_WALLET_PAYMENT", emptyMap(), UUID.randomUUID())!!
+        assertEquals(422, relayed.status)
+        assertEquals(rejected, relayed.body)
+        assertEquals("""{"version":2}""", answer(200, """{"version":2}""").relay("READ_SUBMISSION", emptyMap(), null)!!.body)
+        assertNull(answer(302, null).relay("READ_SUBMISSION", emptyMap(), null)!!.body)
+        assertNull(answer(-1, null).relay("READ_SUBMISSION", emptyMap(), null))
+        for (stage in listOf("connect", "write", "status", "read")) {
+            assertNull(stage, client { FakeConnection(it, failAt = stage) }.relay("READ_SUBMISSION", emptyMap(), null))
+        }
+        assertTrue(opened.all { it.disconnected == 1 })
+    }
+
+    @Test fun a_relay_sends_exactly_the_declared_request_and_nothing_undeclared() {
         val key = UUID.randomUUID()
+        client().relay("SUBMIT_WALLET_PAYMENT", mapOf("walletPayment" to mapOf("token" to "t")), key)
+        val connection = opened.single()
+        assertEquals(ActionFixtures.URL, connection.url.toString())
+        assertEquals("Bearer synthetic-session", connection.headers["Authorization"])
+        assertEquals(key.toString(), connection.headers["X-Idempotency-Key"])
+        assertEquals("t", JSONObject(String(connection.sent.toByteArray())).getJSONObject("walletPayment").getString("token"))
 
-        assertNull(descriptor.request("READ_STATUS", emptyMap(), null).headers["X-Idempotency-Key"])
-        for (refused in listOf<() -> Unit>(
-            { descriptor.request("READ_STATUS", emptyMap(), key) },
-            { descriptor.request("CREATE_PAYMENT_SESSION", emptyMap(), null) },
-            { descriptor.request("CREATE_CUSTOMER_AUTH_TOKEN", emptyMap(), key) },
-            { descriptor.request("CREATE_PAYMENT_SESSION", mapOf("version" to 2), key) },
-            { descriptor.request("CREATE_PAYMENT_SESSION", mapOf("operation" to "READ_STATUS"), key) },
-        )) {
-            try {
-                refused()
-                throw AssertionError("expected InvalidRequest")
-            } catch (_: PaymentActionError.InvalidRequest) {
-            }
-        }
+        assertNull(client().relay("UNKNOWN", emptyMap(), null))
+        assertNull(client().relay("SUBMIT_WALLET_PAYMENT", emptyMap(), null))
+        assertEquals(1, opened.size)
     }
 
-    @Test
-    fun `each environment has its own API host`() {
-        assertEquals("https://api-qa.meld.io$endpoint", descriptor(environment = MeldEnvironment.QA)!!.endpoint.toString())
-        assertEquals("https://api.meld.io$endpoint", descriptor(environment = MeldEnvironment.PRODUCTION)!!.endpoint.toString())
-
-        val absolute = order(actions(endpoint = "https://api-sb.meld.io$endpoint"))
-        assertNotNull(descriptor(absolute))
-        assertNull(descriptor(absolute, MeldEnvironment.QA))
-    }
-
-    @Test
-    fun `an endpoint off the API host or off the order's own path is refused`() {
-        for (bad in listOf(
-            "https://evil.example$endpoint",
-            "//evil.example$endpoint",
-            "http://api-sb.meld.io$endpoint",
-            "https://api-sb.meld.io:443$endpoint",
-            "https://user@api-sb.meld.io$endpoint",
-            "$endpoint?debug=1",
-            "$endpoint#fragment",
-            "crypto/order/headless/onramp/COINME/ord_1/actions",
-            "/crypto/order/headless/onramp/COINME/ord_2/actions",
-            "/crypto/order/headless/onramp/BANXA/ord_1/actions",
-            "/crypto/order/headless/onramp/coinme/ord_1/actions",
-            "/crypto/order/headless/transfer/COINME/ord_1/actions",
-            "/crypto/order/headless/onramp/COINME/ord_1/actions/extra",
-            "/crypto/order/headless/onramp/COINME/x/../ord_1/actions",
-            "/crypto/order/headless/onramp/COINME/ord%5F1/actions",
-            "\\crypto\\order\\headless\\onramp\\COINME\\ord_1\\actions",
-            42,
-        )) {
-            assertNull(bad.toString(), descriptor(order(actions(endpoint = bad))))
-        }
-        assertNull(descriptor(order(actions(version = 2))))
-        assertNull(descriptor(order(actions(version = null))))
-        assertNull(descriptor(order(id = null)))
-        assertNotNull(descriptor(order(provider = null)))
-        assertNotNull(descriptor(order(actions(endpoint = "/crypto/order/headless/offramp/COINME/ord_1/actions"))))
-    }
-
-    @Test
-    fun `the bearer is resolved by JSON pointer`() {
-        val root = mapOf("a/b" to mapOf("c~d" to listOf("x", "y")))
-        assertEquals("y", PaymentActionDescriptor.resolve("/a~1b/c~0d/1", root))
-        for (missing in listOf("/a~1b/c~0d/01", "/a~1b/c~0d/2", "/a~2b", "/a~", "a~1b", "/absent")) {
-            assertNull(missing, PaymentActionDescriptor.resolve(missing, root))
-        }
-
-        for (token in listOf("", "has space", "line\nbreak", 42, null, "é")) {
-            assertNull(token.toString(), descriptor(order(token = token)))
-        }
-        assertNull(descriptor(order(actions(pointer = "/paymentMethodResponseDetails"))))
-        assertNull(descriptor(order(actions(pointer = "paymentMethodResponseDetails/continuationToken"))))
-    }
-
-    @Test
-    fun `operation declarations must be well formed`() {
-        for (operations in listOf(
-            emptyList<Any>(),
-            listOf(op("CREATE_PAYMENT_SESSION", true), op("CREATE_PAYMENT_SESSION", false)),
-            listOf(op("CREATE_PAYMENT_SESSION", "true")),
-            listOf(op("CREATE_PAYMENT_SESSION", 1)),
-            listOf(op("create_payment_session", true)),
-            listOf(op(null, true)),
-            listOf("CREATE_PAYMENT_SESSION"),
-            "CREATE_PAYMENT_SESSION",
-        )) {
-            assertNull(operations.toString(), descriptor(order(actions(operations = operations))))
-        }
-    }
-
-    @Test
-    fun `the response comes back undecoded, and nothing when there is none`() {
-        fun relay(transport: PaymentActionTransport) =
-            client(transport).perform("CREATE_PAYMENT_SESSION", emptyMap(), UUID.randomUUID())
-
-        val rejected = relay { PaymentActionResponse(422, """{"version":1,"code":"PROVIDER_REJECTED"}""") }!!
-        assertEquals(422, rejected.status)
-        assertEquals("""{"version":1,"code":"PROVIDER_REJECTED"}""", rejected.body)
-        assertNull(relay { throw PaymentActionError.Transport(sent = true) })
-        assertNull(relay { throw IllegalStateException("boom") })
-
-        var posted = 0
-        assertNull(client { posted += 1; PaymentActionResponse(200, """{"version":1}""") }.perform("UNDECLARED", emptyMap(), null))
-        assertEquals(0, posted)
-    }
-
-    @Test
-    fun `the transport gets exactly the built request`() {
-        var sent: PaymentActionRequest? = null
-        val key = UUID.randomUUID()
-        client { sent = it; PaymentActionResponse(200, """{"version":1}""") }
-            .perform("CREATE_PAYMENT_SESSION", mapOf("paymentToken" to "pm_1"), key)
-
-        assertEquals("https://api-sb.meld.io$endpoint", sent!!.url.toString())
-        assertEquals(key.toString(), sent!!.headers["X-Idempotency-Key"])
-        assertEquals("pm_1", JSONObject(String(sent!!.body)).getString("paymentToken"))
+    @Test fun a_relayed_body_over_64_kib_arrives_as_null_with_its_status() {
+        val envelope = """{"version":1,"pad":""}""".length
+        val fits = """{"version":1,"pad":"${"x".repeat(65_536 - envelope)}"}"""
+        assertEquals(fits, answer(200, fits).relay("READ_SUBMISSION", emptyMap(), null)!!.body)
+        val over = answer(400, """{"version":1,"pad":"${"x".repeat(70_000)}"}""").relay("READ_SUBMISSION", emptyMap(), null)!!
+        assertEquals(400, over.status)
+        assertNull(over.body)
+        assertEquals(65_537, opened.last().bytesRead)
     }
 }

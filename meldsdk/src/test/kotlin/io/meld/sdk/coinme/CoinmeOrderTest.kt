@@ -88,6 +88,24 @@ class CoinmeOrderTest {
     }
 
     @Test
+    fun `only the endpoint spellings the web SDK accepts are admitted`() {
+        fun withEndpoint(endpoint: String): Map<String, Any?> {
+            val map = orderMap()
+            @Suppress("UNCHECKED_CAST")
+            val actions = map["paymentActions"] as Map<String, Any?>
+            return map + ("paymentActions" to actions + ("endpoint" to endpoint))
+        }
+        val path = "/crypto/order/headless/onramp/COINME/${CoinmeFixtures.ORDER_ID}/actions"
+
+        assertNotNull(parse(withEndpoint(path)))
+        assertNotNull(parse(withEndpoint("https://api-sb.meld.io$path")))
+        for (endpoint in listOf(path.removePrefix("/"), "https://api-sb.meld.io:443$path")) {
+            assertNull(endpoint, parse(withEndpoint(endpoint)))
+            assertNull(endpoint, Meld.adapterFor(MeldOrder.fromMap(withEndpoint(endpoint))))
+        }
+    }
+
+    @Test
     fun `the order's Coinme environment must match the configured one`() {
         val live = orderMap(environment = "live")
 

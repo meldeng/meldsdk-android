@@ -4,6 +4,7 @@ import io.meld.sdk.MeldEnvironment
 import io.meld.sdk.MeldHeadlessPresentation
 import io.meld.sdk.MeldOrder
 import io.meld.sdk.actions.PaymentActionDescriptor
+import io.meld.sdk.actions.PaymentActionException
 
 /** A `VENDOR_SDK / COINME_VAULT / 1` card order, admitted only with everything the flow needs. */
 internal class CoinmeOrder private constructor(
@@ -30,10 +31,17 @@ internal class CoinmeOrder private constructor(
                 else -> return null
             }
             if (live != (environment == MeldEnvironment.PRODUCTION)) return null
-            val actions = PaymentActionDescriptor.parse(order, environment) ?: return null
+            val actions = try {
+                PaymentActionDescriptor.parse(order, environment)
+            } catch (_: PaymentActionException) {
+                return null
+            }
             if (actions.operations[CREATE_CUSTOMER_AUTH_TOKEN] != true || actions.operations[CREATE_PAYMENT_SESSION] != true) {
                 return null
             }
+            // The web SDK parses the same declaration in the page and accepts only these two spellings.
+            val endpoint = (order.raw["paymentActions"] as? Map<*, *>)?.get("endpoint")
+            if (endpoint != actions.endpoint.path && endpoint != actions.identity) return null
             if (data["savedCards"].let { it != null && it !is List<*> } ||
                 listOf("customerId", "paymentProviderId", "riskClientId", "riskPartnerId").any { text(data[it]) == null } ||
                 text(details["sdkSessionToken"]) == null

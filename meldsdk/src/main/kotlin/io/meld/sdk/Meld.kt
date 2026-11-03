@@ -19,16 +19,27 @@ import org.json.JSONObject
 // The order's declared protocol selects its adapter; legacy hints apply only if absent, so
 // supporting a new provider does not change this API. Supported today: Mercuryo card.
 
+/** The Meld backend that created the order. Configure the same one your server called. */
 enum class MeldEnvironment(val raw: String) {
     SANDBOX("sandbox"),
+
+    /** Meld's QA backend. The SDK checks its orders' provider hosts as it checks [SANDBOX] ones. */
     QA("qa"),
     PRODUCTION("production"),
 }
+
+/** The provider environment the SDK checks this backend's orders against. QA is checked as SANDBOX. */
+internal val MeldEnvironment.providerEnvironment: MeldEnvironment
+    get() = when (this) {
+        MeldEnvironment.SANDBOX, MeldEnvironment.QA -> MeldEnvironment.SANDBOX
+        MeldEnvironment.PRODUCTION -> MeldEnvironment.PRODUCTION
+    }
 
 /**
  * The HeadlessOrderResponse from `POST /crypto/order/headless`, passed verbatim. The fields the
  * SDK reads are exposed directly; the whole `paymentMethodResponseDetails` is also kept as [raw]
  * so provider-specific fields (a session token, etc.) stay available without modeling each one.
+ * The whole response is retained internally to resolve server-declared action credentials.
  */
 class MeldOrder private constructor(
     val id: String?,
@@ -41,9 +52,9 @@ class MeldOrder private constructor(
      */
     val serviceProvider: String?,
     val paymentMethodResponseDetails: Details?,
-    internal val presentationDeclaration: PresentationDeclaration,
-    /** The whole order as returned, for contract fields addressed by pointer (e.g. `paymentActions`). */
+    /** The order as decoded, so a server-declared pointer resolves against the whole response. */
     internal val raw: Map<String, Any?>,
+    internal val presentationDeclaration: PresentationDeclaration,
 ) {
     val headlessPresentation: MeldHeadlessPresentation?
         get() = (presentationDeclaration as? PresentationDeclaration.Declared)?.value
@@ -93,8 +104,8 @@ class MeldOrder private constructor(
                 paymentMethodType = dict["paymentMethodType"] as? String,
                 serviceProvider = payload?.get("serviceProvider") as? String,
                 paymentMethodResponseDetails = details,
-                presentationDeclaration = PresentationDeclaration.decode(dict),
                 raw = dict,
+                presentationDeclaration = PresentationDeclaration.decode(dict),
             )
         }
     }

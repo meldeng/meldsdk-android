@@ -1,235 +1,130 @@
 package io.meld.sdk.actions
 
-import android.os.Handler
-import android.os.Looper
-import io.meld.sdk.MeldEnvironment
-import io.meld.sdk.MeldOrder
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
-import java.net.URI
 import java.net.URL
 import java.util.UUID
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 
-internal sealed class PaymentActionError(message: String) : Exception(message) {
-    class InvalidRequest : PaymentActionError("invalid_request")
-
-    /** [sent] is false only when the connection failed before any of the request was written. */
-    class Transport(val sent: Boolean) : PaymentActionError(if (sent) "transport_after_send" else "transport")
+/** Opens the connection for one action. A seam, so JVM tests answer without a network. */
+internal fun interface ActionConnector {
+    @Throws(IOException::class)
+    fun open(url: URL): HttpURLConnection
 }
 
-internal class PaymentActionRequest(val url: URL, val headers: Map<String, String>, val body: ByteArray) {
-    override fun toString(): String = "PaymentActionRequest[REDACTED]"
+/** Sends one declared action and returns its versioned JSON answer. Blocks, so never call it on main. */
+internal fun interface PaymentActionTransport {
+    fun execute(operation: String, fields: Map<String, Any?>, key: UUID?): Map<String, Any?>
 }
 
+/** One order's actions and the ordered thread they run on, as iOS's `PaymentActionSending`. */
+internal interface PaymentActionSending : PaymentActionTransport {
+    /** Runs [job] on the actions thread after all earlier work. [onResult] runs on main, and never after [finish]. */
+    fun <T> run(job: () -> T, onResult: (Result<T>) -> Unit)
+
+    /** Sends [operation] on the actions thread. [callback] runs on main, and never after [finish]. */
+    fun send(
+        operation: String,
+        fields: Map<String, Any?> = emptyMap(),
+        key: UUID? = null,
+        callback: (Result<Map<String, Any?>>) -> Unit,
+    ) = run({ execute(operation, fields, key) }, callback)
+
+    /** Lets work in flight complete and accepts none after it. */
+    fun finish()
+}
+
+/** One action's HTTP answer, undecoded. [body] is null when there is none or it is over [MAX_ACTION_BODY_BYTES]. */
 internal class PaymentActionResponse(val status: Int, val body: String?)
 
-/** The order's `paymentActions`, validated against the configured environment's API host. */
-internal class PaymentActionDescriptor private constructor(
-    val endpoint: URL,
-    private val bearer: String,
-    val operations: Map<String, Boolean>,
-) {
-    override fun toString(): String = "PaymentActionDescriptor[REDACTED]"
+/**
+ * Order-scoped transport over the platform [HttpURLConnection]: no cache, no redirects, no response
+ * diagnostics and no application retries. The platform may retry a failed connection by itself, which is
+ * safe because every mutation carries an idempotency key and a concurrent duplicate is answered 425.
+ * Unlike iOS, a `CookieHandler` the host app installed is still consulted; the endpoint sets no cookies
+ * and authorizes only the bearer.
+ */
+internal class PaymentActionClient(
+    val descriptor: PaymentActionDescriptor,
+    private val queue: ActionQueue = ActionQueue(),
+    private val connector: ActionConnector = ActionConnector { url -> url.openConnection() as HttpURLConnection },
+) : PaymentActionSending {
 
-    fun request(operation: String, fields: Map<String, Any?>, idempotencyKey: UUID?): PaymentActionRequest {
-        val required = operations[operation]
-        if (required == null || required != (idempotencyKey != null) || "version" in fields || "operation" in fields) {
-            throw PaymentActionError.InvalidRequest()
-        }
-        val body = JSONObject(fields + mapOf("version" to 1, "operation" to operation)).toString().toByteArray(Charsets.UTF_8)
-        if (body.size > BODY_LIMIT) throw PaymentActionError.InvalidRequest()
-        val headers = linkedMapOf(
-            "Content-Type" to "application/json",
-            "Accept" to "application/json",
-            "Cache-Control" to "no-store",
-            "Authorization" to "Bearer $bearer",
-        )
-        if (idempotencyKey != null) headers["X-Idempotency-Key"] = idempotencyKey.toString()
-        return PaymentActionRequest(endpoint, headers, body)
+    override fun <T> run(job: () -> T, onResult: (Result<T>) -> Unit) = queue.run(job, onResult)
+
+    override fun finish() = queue.finish()
+
+    override fun execute(operation: String, fields: Map<String, Any?>, key: UUID?): Map<String, Any?> {
+        val (status, body) = post(descriptor.request(operation, fields, key))
+        if (status !in 200..299) throw PaymentActionFailureCode.decode(body, status)
+        val json = body?.let(::decodeActionObject)
+        if (json == null || strictInt(json["version"]) != 1) throw PaymentActionException.InvalidResponse
+        return json
     }
 
-    companion object {
-        const val BODY_LIMIT = 65_536
-        private val ACTION_NAME = Regex("[A-Z][A-Z0-9_]{0,63}")
-        private val INVALID_ESCAPE = Regex("~(?:[^01]|$)")
-        private val ARRAY_INDEX = Regex("0|[1-9][0-9]*")
-
-        fun baseUrl(environment: MeldEnvironment): String = when (environment) {
-            MeldEnvironment.SANDBOX -> "https://api-sb.meld.io"
-            MeldEnvironment.QA -> "https://api-qa.meld.io"
-            MeldEnvironment.PRODUCTION -> "https://api.meld.io"
-        }
-
-        fun parse(order: MeldOrder, environment: MeldEnvironment): PaymentActionDescriptor? {
-            val raw = order.raw["paymentActions"] as? Map<*, *> ?: return null
-            val orderId = order.id?.takeIf { it.isNotEmpty() } ?: return null
-            val declared = raw["endpoint"] as? String ?: return null
-            if (!isOne(raw["version"])) return null
-            val base = URI(baseUrl(environment))
-            val url = try {
-                base.resolve(declared)
-            } catch (_: IllegalArgumentException) {
-                return null
-            }
-            // Comparing the declared string with its resolved form rejects userinfo, ports, queries,
-            // fragments, dot segments and escapes in one place.
-            val path = url.rawPath ?: return null
-            if (url.scheme != "https" || url.host != base.host || url.port != -1 || path != url.path ||
-                (declared != path && declared != "https://${base.host}$path")
-            ) {
-                return null
-            }
-            val parts = path.split("/")
-            if (parts.size != 8 || parts.subList(0, 4) != listOf("", "crypto", "order", "headless") ||
-                parts[4] !in setOf("onramp", "offramp") ||
-                !ACTION_NAME.matches(parts[5]) || parts[6] != orderId || parts[7] != "actions" ||
-                (order.serviceProvider != null && order.serviceProvider != parts[5])
-            ) {
-                return null
-            }
-            val pointer = raw["bearerTokenPointer"] as? String ?: return null
-            val bearer = resolve(pointer, order.raw) as? String ?: return null
-            if (bearer.isEmpty() || bearer.length > 16_384 || bearer.any { it.code !in 0x21..0x7e }) return null
-            val declarations = raw["operations"] as? List<*> ?: return null
-            if (declarations.isEmpty()) return null
-            val operations = LinkedHashMap<String, Boolean>()
-            for (declaration in declarations) {
-                val item = declaration as? Map<*, *> ?: return null
-                val operation = item["operation"] as? String ?: return null
-                val required = item["idempotencyKeyRequired"] as? Boolean ?: return null
-                if (!ACTION_NAME.matches(operation) || operations.put(operation, required) != null) return null
-            }
-            val endpoint = try {
-                url.toURL()
-            } catch (_: Exception) {
-                return null
-            }
-            return PaymentActionDescriptor(endpoint, bearer, operations)
-        }
-
-        /** RFC 6901. */
-        fun resolve(pointer: String, root: Any?): Any? {
-            if (!pointer.startsWith("/") || pointer.length > 1024) return null
-            var current = root
-            for (encoded in pointer.substring(1).split("/")) {
-                if (INVALID_ESCAPE.containsMatchIn(encoded)) return null
-                val key = encoded.replace("~1", "/").replace("~0", "~")
-                current = when (current) {
-                    is Map<*, *> -> if (current.containsKey(key)) current[key] else return null
-                    is List<*> -> {
-                        val index = key.takeIf { ARRAY_INDEX.matches(it) }?.toIntOrNull() ?: return null
-                        if (index >= current.size) return null
-                        current[index]
-                    }
-                    else -> return null
-                }
-            }
-            return current
-        }
+    /**
+     * The raw answer to a declared [operation], for a caller that decodes it itself (the web SDK in the
+     * Coinme checkout), or null when there is none. Blocks, so never call it on main.
+     */
+    fun relay(operation: String, fields: Map<String, Any?>, key: UUID?): PaymentActionResponse? = try {
+        val (status, body) = post(descriptor.request(operation, fields, key))
+        PaymentActionResponse(status, body?.takeIf { it.size <= MAX_ACTION_BODY_BYTES }?.toString(Charsets.UTF_8))
+    } catch (_: PaymentActionException) {
+        null
     }
-}
 
-internal fun interface PaymentActionTransport {
-    /** Blocking. Throws [PaymentActionError.Transport]; a body over the limit arrives as null. */
-    fun post(request: PaymentActionRequest): PaymentActionResponse
-}
-
-/** No cache, no redirects, bounded bodies. */
-internal object HttpPaymentActionTransport : PaymentActionTransport {
-    override fun post(request: PaymentActionRequest): PaymentActionResponse {
+    /** The status and body of [request], the body read to at most one byte past the limit. */
+    private fun post(request: ActionRequest): Pair<Int, ByteArray?> {
         val connection = try {
-            request.url.openConnection() as HttpURLConnection
+            connector.open(request.url.toURL())
         } catch (_: IOException) {
-            throw PaymentActionError.Transport(sent = false)
+            throw PaymentActionException.Transport
+        } catch (_: RuntimeException) {
+            throw PaymentActionException.Transport
         }
         try {
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.instanceFollowRedirects = false
-            connection.useCaches = false
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
-            connection.setFixedLengthStreamingMode(request.body.size)
-            request.headers.forEach(connection::setRequestProperty)
-            try {
-                connection.connect()
-            } catch (_: IOException) {
-                throw PaymentActionError.Transport(sent = false)
-            }
-            try {
-                connection.outputStream.use { it.write(request.body) }
-                val status = connection.responseCode
-                val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-                return PaymentActionResponse(status, stream?.use(::readBounded))
-            } catch (_: IOException) {
-                throw PaymentActionError.Transport(sent = true)
-            }
+            return exchange(connection, request)
+        } catch (_: IOException) {
+            throw PaymentActionException.Transport
+        } catch (_: RuntimeException) {
+            throw PaymentActionException.Transport
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun readBounded(stream: InputStream): String? {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val read = stream.read(buffer)
-            if (read < 0) break
-            out.write(buffer, 0, read)
-            if (out.size() > PaymentActionDescriptor.BODY_LIMIT) return null
-        }
-        return out.toString(Charsets.UTF_8.name())
-    }
-}
+    private fun exchange(connection: HttpURLConnection, request: ActionRequest): Pair<Int, ByteArray?> {
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.instanceFollowRedirects = false
+        connection.useCaches = false
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
+        connection.setFixedLengthStreamingMode(request.body.size)
+        for ((name, value) in request.headers) connection.setRequestProperty(name, value)
+        connection.outputStream.use { it.write(request.body) }
 
-/**
- * Order-scoped relay for `paymentActions`. It sends only an operation the order declares, to the
- * order's own endpoint with the order's bearer, and hands back the raw response for the caller to
- * decode. It never interprets provider state.
- */
-internal class PaymentActionClient(
-    private val descriptor: PaymentActionDescriptor,
-    private val transport: PaymentActionTransport = HttpPaymentActionTransport,
-) {
-    private val executor: ExecutorService by lazy {
-        Executors.newSingleThreadExecutor { Thread(it, "MeldPaymentActions").apply { isDaemon = true } }
+        val status = connection.responseCode
+        if (status < 100) throw PaymentActionException.InvalidResponse
+        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        return status to stream?.use(::readBounded)
     }
-    private val main by lazy { Handler(Looper.getMainLooper()) }
 
-    /** Completes on the main thread with the response, or null when there is none. */
-    fun send(operation: String, fields: Map<String, Any?>, idempotencyKey: UUID?, completion: (PaymentActionResponse?) -> Unit) {
-        try {
-            executor.execute {
-                val response = perform(operation, fields, idempotencyKey)
-                main.post { completion(response) }
+    private companion object {
+        const val CONNECT_TIMEOUT_MS = 15_000
+        const val READ_TIMEOUT_MS = 30_000
+
+        /** One byte past the limit, so an oversized body is seen as oversized without reading the rest. */
+        fun readBounded(stream: InputStream): ByteArray {
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8_192)
+            while (out.size() <= MAX_ACTION_BODY_BYTES) {
+                val read = stream.read(buffer, 0, minOf(buffer.size, MAX_ACTION_BODY_BYTES + 1 - out.size()))
+                if (read < 0) break
+                out.write(buffer, 0, read)
             }
-        } catch (_: RejectedExecutionException) {
-            // Closed: the session that asked is gone.
-        }
-    }
-
-    fun close() {
-        executor.shutdown()
-    }
-
-    fun perform(operation: String, fields: Map<String, Any?>, idempotencyKey: UUID?): PaymentActionResponse? {
-        val request = try {
-            descriptor.request(operation, fields, idempotencyKey)
-        } catch (_: Exception) {
-            return null
-        }
-        return try {
-            transport.post(request)
-        } catch (_: Exception) {
-            null
+            return out.toByteArray()
         }
     }
 }
-
-internal fun isOne(value: Any?): Boolean = value is Number && value.toDouble() == 1.0
