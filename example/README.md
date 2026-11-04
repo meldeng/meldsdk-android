@@ -6,11 +6,16 @@ a live quote, then the Mercuryo widget with a status banner + event log undernea
 Pick **Google Pay** to create a `GOOGLE_PAY` order instead. The SDK then presents only the wallet's
 own sheet, on a physical phone and an app that meet the Google Pay requirements in the SDK README.
 
+Tap **Check requirements** to run `Meld.ensureReady` for the selected provider before buying: the
+demo mints a requirements session, asks for any fields or terms in a dialog, and opens hosted KYC in
+a Custom Tab.
+
 Where to look:
-- `MainActivity.kt` — `CheckoutScreen` (the SDK touchpoints: `configure` / `capabilities`) and
-  `WidgetScreen` (the actual integration: `Meld.mount(...)` + event handling).
-- `OrderService.kt` — **POC-only**: creates the order by calling Meld directly. In a real app your
-  backend does this so the API key never ships in the app.
+- `MainActivity.kt` — `CheckoutScreen` (the SDK touchpoints: `configure` / `capabilities`),
+  `checkRequirements` (`Meld.ensureReady` and its handlers) and `WidgetScreen` (the actual
+  integration: `Meld.mount(...)` + event handling).
+- `OrderService.kt` — **POC-only**: creates the order and mints the requirements session by calling
+  Meld directly. In a real app your backend does this so the API key never ships in the app.
 
 ## Credentials
 
