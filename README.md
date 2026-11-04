@@ -9,6 +9,8 @@ MeldSDK mounts the order's payment UI and relays its lifecycle events, with one 
 `Meld.mount(order, host, handlers)` for a widget that renders into a view you own, or
 `Meld.mount(order, activity, handlers)` for a wallet sheet that draws into none. It never renders
 or transports card data — the provider's own page does, loaded over HTTPS in a `WebView`.
+Before the order exists, `Meld.ensureReady` runs what the customer still needs for the providers you
+offer (see [Customer requirements](#customer-requirements-before-the-order)).
 
 ## Install
 
@@ -17,7 +19,7 @@ Add the dependency (published to Maven Central as `io.meld:meldsdk`):
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("io.meld:meldsdk:0.8.0")
+    implementation("io.meld:meldsdk:0.10.0")
 }
 ```
 
@@ -147,6 +149,138 @@ Neither `onPaymentSubmitted` nor `onStatusChange` with `COMPLETED` is settlement
 client-side UX signals. Mark the order paid only when your backend receives Meld's
 `TRANSACTION_CRYPTO_COMPLETE` webhook. Show "processing", not "success", until then.
 
+## Customer requirements, before the order
+
+`Meld.ensureReady` runs what a customer still needs before you create an order with the providers you
+offer: verify a contact, accept a provider's terms, give their details, complete Meld's KYC, or finish
+a provider's hosted onboarding. Meld plans every step; the SDK runs the ones it can and asks your app
+for what only you can supply. No provider names appear in this API, and your API key never reaches
+the device.
+
+**1. Your backend mints a session** with its API key:
+
+```http
+POST /crypto/onramp/requirements-sessions
+Authorization: BASIC <your API key>
+Content-Type: application/json
+
+{"customerId": "W9kL817BBS7bNEwxAZaX4z",
+ "serviceProviders": ["BANXA", "UPHOLD"],
+ "order": {"paymentMethodType": "CREDIT_DEBIT_CARD", "sourceCurrencyCode": "USD", "sourceAmount": 250,
+           "destinationCurrencyCode": "USDC", "destinationNetworkCode": "BASE", "countryCode": "US"},
+ "readyWhen": "ALL"}
+```
+
+Pass the `201` response to the app unchanged. It carries a bearer for that customer and those
+providers that lasts 30 minutes. A session names 1 to 5 providers; `order` is optional; `readyWhen` is
+`ALL` (the default: every provider must be ready) or `ANY`. Requirements sessions are enabled per Meld
+account, so ask Meld to enable yours.
+
+Mint the session on the environment the app passes to `Meld.configure`. The session names its endpoint
+relative to the API host, so the SDK runs it against the configured environment and cannot tell which
+one minted it: a session from another environment is refused with 401 and, after the one
+`renewSession`, the run ends `EXPIRED`.
+
+**2. The app runs it:**
+
+```kotlin
+val session = MeldRequirementsSession.fromJson(sessionJson)
+
+val handle = Meld.ensureReady(
+    activity, // a ComponentActivity; destroying it cancels the run
+    session,
+    MeldReadyHandlers(
+        collect = { request, answer ->
+            // request.fields: key, label, fieldType, jsonSchema, allowedValues.
+            // request.fieldErrors: what Meld refused in your last answer, and why.
+            showForm(request) { values -> answer(values) } // answer(null) if you handled it yourself
+        },
+        confirmAgreement = { request, answer ->
+            showTerms(request.serviceProvider, request.url) { accepted -> answer(accepted) }
+        },
+        renewSession = { answer -> mintAgain { json -> answer(json?.let(MeldRequirementsSession::fromJson)) } },
+    ),
+) { result ->
+    when (result.status) {
+        MeldReadyStatus.READY, MeldReadyStatus.UNDETERMINED -> createOrder()
+        MeldReadyStatus.ACTION_REQUIRED -> show(result.pending)
+        else -> report(result)
+    }
+}
+```
+
+| `result.status` | Means | Do |
+|---|---|---|
+| `READY` | Every provider is ready (with `readyWhen: ANY`, one is) | Create the order |
+| `UNDETERMINED` | Meld could not tell | Create the order; creation has the final word |
+| `PENDING` | Only reviews are left, and `waitTimeoutMs` passed | Wait for the `CUSTOMER_KYC_STATUS_CHANGE` webhook, or run `ensureReady` again later |
+| `ACTION_REQUIRED` | A step is left that this run could not do: no handler for it, terms declined, a form or a contact code refused four times, or a page closed unfinished. `pending` is empty when nothing is left that an app can do and nothing is waited on, such as fields only the provider can supply; the providers' `open` steps name it | Show `result.pending` (or the providers' `open` steps when it is empty), then run `ensureReady` again |
+| `BLOCKED` | A provider refused the customer | Offer another provider |
+| `CANCELLED` | You called `handle.cancel()`, or the activity was destroyed | — |
+| `EXPIRED` | The session was refused with 401 and `renewSession` gave no new one that works: it expired, or another environment minted it | Mint a new session on the configured environment |
+| `FAILED` | `result.error.kind` is `http` (with `status` and `code`), `transport` or `protocol` | Try again later |
+
+`result.providers` gives each provider's `status`, `eligible` and its `open` steps.
+Each open step carries Meld's `reason` when there is one and, on a share the provider refused, its
+`errorCodes` (such as Coinme's `PHONE_VERIFICATION_REQUIRED`; null when there are none). The SDK does
+not act on them.
+`result.continuation` lists the steps a provider declares to run inside `Meld.mount(order)` after
+create, today only Stripe's identity check, so `READY` can still be followed by them. This SDK does
+not present Stripe orders yet: `Meld.capabilities` reports them `unsupported`. Other providers' own
+pages, such as Mercuryo's widget or Coinbase's payment page, are not listed: they open when the
+order is mounted. Every status and step kind is an open set: treat a value you do not know as "not
+ready yet".
+
+- Every handler is called on the main thread. Answer through its callback once, from any thread; a
+  second answer is ignored. `onResult` runs once, on the main thread, and no handler is called after
+  it, even when `onProgress` cancelled the run.
+- A step whose handler you leave out is never run: the run ends `ACTION_REQUIRED` with that step in
+  `pending`. The SDK never accepts terms on its own.
+- `onProgress` reports `READING`, `RUNNING`, `AWAITING_INPUT`, `PRESENTING` and `WAITING`.
+- While only reviews are left, the SDK polls as often as Meld asks, between 1 and 60 seconds (every 4
+  seconds when Meld does not say). `handle.refresh()` reads again at once: call it when your backend
+  relays a `CUSTOMER_KYC_STATUS_CHANGE` webhook to the app. `MeldReadyOptions(waitTimeoutMs)` bounds
+  the polling (10 minutes by default). You can keep the handle, say in a `ViewModel`; once the result
+  arrives it holds neither your handlers nor the activity.
+- Retries are bounded. A dropped connection is sent again with the same idempotency key after 1, 2 and
+  4 seconds, then the run fails with `transport`. A request Meld is still running (425) is sent again
+  each second, up to 5 times. A step whose outcome Meld could not confirm (503 `OUTCOME_UNKNOWN`) is
+  read first. If it is still offered, a page refresh is sent again with a new key, at most 3 times per
+  step; any other step may have been applied, so it is not sent again and the run ends
+  `ACTION_REQUIRED` with it. A 401
+  asks `renewSession` for a new session and carries on with it, sending a refused step again; a second
+  401 before any request succeeds, or a 401 after 3 renewals in one run, ends it `EXPIRED`.
+- Call `ensureReady` on the main thread.
+
+**Hosted pages.** Meld's KYC, a provider's hosted onboarding or terms, and a provider's hosted form
+open in a Custom Tab, or in the browser when no browser offers Custom Tabs. The SDK cannot close the
+page, so it does not read while the page is open: the page counts as closed when your activity
+resumes. When Meld offered the page as a link, such as a provider's hosted onboarding, the SDK then
+refreshes the step once (a 409 there only means the step already moved on; after a 401 it sends the
+refresh again on the renewed session). It then reads again, and that read decides whether the step
+is done. If the step is still offered and nothing else changed, the SDK waits up to 30 seconds for
+Meld to report it done, then ends the run `ACTION_REQUIRED` with that step; it does not open the
+page again. A link that expires within a minute is refreshed before it opens. A page the run reaches
+while your activity is in the background opens after the activity resumes, from a new read. On a
+device with no browser, those steps end the run `ACTION_REQUIRED`. To present the page yourself, pass
+`presentUrl` and call its callback once the page closes.
+
+The SDK adds `androidx.browser` 1.8.0, `androidx.activity` 1.9.3 as an API dependency, and package
+queries for the Custom Tabs service and for https browsers, so both resolve on Android 11 and later.
+
+### Hosted verification after a refused order
+
+When order creation is refused with a hosted verification page
+(`serviceProviderDetails.hostedVerificationUrl`, as for a new US customer's `KYC_NOT_COMPLETED`),
+open it, then create the order again with a new `externalOrderId`:
+
+```kotlin
+Meld.openHostedVerification(activity, url) { createOrder(externalOrderId = newExternalOrderId()) }
+```
+
+It opens the page as above. It throws `IllegalArgumentException` for a page that is not https, and
+`ActivityNotFoundException` when no app on the device can open it.
+
 ## Mercuryo — prerequisites
 
 - **KYC:** the customer needs an APPROVED Sumsub verification linked to their Meld customer before
@@ -167,8 +301,9 @@ scoped to the provider's origins, so a compromised or third-party subframe can't
 ## Example app
 
 A complete, runnable Compose demo is checked in at [`example/`](example/) — a styled checkout
-card, a live quote, then the Mercuryo widget with a status banner + event log (parity with the
-iOS and web demos). See [example/README.md](example/README.md) for credentials and how to run it.
+card, a live quote, a requirements check with `Meld.ensureReady`, then the Mercuryo widget with a
+status banner + event log (parity with the iOS and web demos). See
+[example/README.md](example/README.md) for credentials and how to run it.
 
 ## Declared presentation support
 

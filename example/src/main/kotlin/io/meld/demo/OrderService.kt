@@ -149,11 +149,39 @@ class OrderService {
             data
         }
 
-    private fun post(path: String, body: JSONObject): Pair<Int, String> {
+    /**
+     * `POST /crypto/onramp/requirements-sessions` — returns the raw session JSON to hand to
+     * `MeldRequirementsSession.fromJson`. The session is unversioned, so no `Meld-Version` is sent.
+     */
+    suspend fun mintRequirementsSession(serviceProvider: String, paymentMethodType: String, customerId: String): String =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject(
+                mapOf(
+                    "customerId" to customerId,
+                    "serviceProviders" to listOf(serviceProvider),
+                    "order" to mapOf(
+                        "paymentMethodType" to paymentMethodType,
+                        "sourceCurrencyCode" to DemoConfig.SOURCE_CURRENCY,
+                        "sourceAmount" to DemoConfig.SOURCE_AMOUNT.toBigDecimal(),
+                        "destinationCurrencyCode" to DemoConfig.DESTINATION_CURRENCY,
+                        "countryCode" to DemoConfig.COUNTRY,
+                    ),
+                ),
+            )
+            val (status, data) = post("/crypto/onramp/requirements-sessions", body, version = null)
+            if (status !in 200..299) {
+                val info = runCatching { JSONObject(data) }.getOrNull()
+                val code = info?.optString("code")?.ifEmpty { null } ?: status.toString()
+                throw DemoException("$code — requirements session failed")
+            }
+            data
+        }
+
+    private fun post(path: String, body: JSONObject, version: String? = DemoConfig.VERSION): Pair<Int, String> {
         val conn = (URL(DemoConfig.apiBase + path).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Authorization", "BASIC ${DemoConfig.meldApiKey}")
-            setRequestProperty("Meld-Version", DemoConfig.VERSION)
+            if (version != null) setRequestProperty("Meld-Version", version)
             setRequestProperty("X-Idempotency-Key", UUID.randomUUID().toString())
             setRequestProperty("Content-Type", "application/json")
             doOutput = true

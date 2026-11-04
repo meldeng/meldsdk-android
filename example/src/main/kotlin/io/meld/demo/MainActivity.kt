@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -38,9 +39,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,6 +66,13 @@ import io.meld.sdk.MeldOrder
 import io.meld.sdk.MeldReadiness
 import io.meld.sdk.MeldStatus
 import io.meld.sdk.MeldWidgetHandle
+import io.meld.sdk.requirements.MeldAgreementRequest
+import io.meld.sdk.requirements.MeldCollectRequest
+import io.meld.sdk.requirements.MeldReadyHandle
+import io.meld.sdk.requirements.MeldReadyHandlers
+import io.meld.sdk.requirements.MeldReadyResult
+import io.meld.sdk.requirements.MeldReadyStatus
+import io.meld.sdk.requirements.MeldRequirementsSession
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -71,6 +81,7 @@ import kotlin.coroutines.resume
 //
 // Where to look:
 //   • CheckoutScreen   — the checkout UI and the SDK touchpoints (configure / capabilities)
+//   • checkRequirements — Meld.ensureReady before the order: your UI collects, Meld plans the steps
 //   • WidgetScreen     — the actual integration: Meld.mount(...) + event handling
 //   • OrderService.kt  — POC-only: creates the order by calling Meld directly. In a real app your
 //                        backend does this so the API key never ships in the app.
@@ -127,6 +138,9 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
     var selectedProvider by remember { mutableStateOf<String?>(null) }
     var paymentMethod by remember { mutableStateOf(PaymentMethods.first()) }
     var readinessText by remember { mutableStateOf("") }
+    var requirementsText by remember { mutableStateOf("") }
+    var asking by remember { mutableStateOf<DemoAsk?>(null) }
+    var requirements by remember { mutableStateOf<MeldReadyHandle?>(null) }
     val context = LocalContext.current
     val selectedPresentation = providers.firstOrNull { it.serviceProvider == selectedProvider }?.headlessPresentation
 
@@ -174,6 +188,44 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
         }
         readinessText = describe(readiness)
     }
+
+    DisposableEffect(Unit) { onDispose { requirements?.cancel() } }
+
+    // SDK: run the customer's requirements before the order. Your backend mints the session with its API
+    // key; the SDK runs Meld's steps, asks your UI for fields and terms, and opens hosted KYC in a Custom Tab.
+    fun checkRequirements() {
+        val activity = context.activity() as? ComponentActivity ?: return
+        val customer = if (needsCustomerField) customerId.trim() else DemoConfig.meldCustomerId
+        val provider = selectedProvider
+        if (customer.isEmpty() || provider == null) {
+            requirementsText = "Pick a provider and a Meld customer ID."
+            return
+        }
+        requirements?.cancel()
+        requirementsText = "minting a requirements session…"
+        scope.launch {
+            try {
+                val session = MeldRequirementsSession.fromJson(orders.mintRequirementsSession(provider, paymentMethod.type, customer))
+                requirements = Meld.ensureReady(
+                    activity,
+                    session,
+                    MeldReadyHandlers(
+                        onProgress = { requirementsText = "requirements: ${it.state.name.lowercase()}…" },
+                        collect = { request, answer -> asking = DemoAsk.Collect(request, answer) },
+                        confirmAgreement = { request, answer -> asking = DemoAsk.Agree(request, answer) },
+                    ),
+                ) { result ->
+                    requirements = null
+                    asking = null
+                    requirementsText = describe(result)
+                }
+            } catch (e: Exception) {
+                requirementsText = "requirements failed: ${e.message}"
+            }
+        }
+    }
+
+    asking?.let { ask -> AskDialog(ask, onCancel = { requirements?.cancel() }) { asking = null } }
 
     fun buy() {
         errorText = ""
@@ -248,6 +300,13 @@ private fun CheckoutScreen(events: EventLogState, onPresent: (MeldOrder) -> Unit
             }
             if (readinessText.isNotEmpty()) {
                 Text(readinessText, color = SubInk, fontSize = 13.sp)
+            }
+
+            TextButton(onClick = { checkRequirements() }, enabled = selectedProvider != null) {
+                Text("Check requirements", color = Green, fontWeight = FontWeight.SemiBold)
+            }
+            if (requirementsText.isNotEmpty()) {
+                Text(requirementsText, color = SubInk, fontSize = 13.sp)
             }
 
             Button(
@@ -501,6 +560,65 @@ private fun Context.activity(): Activity? {
         context = context.baseContext
     }
     return null
+}
+
+// MARK: - demo-only requirements UI
+
+private sealed class DemoAsk {
+    class Collect(val request: MeldCollectRequest, val answer: (Map<String, String>?) -> Unit) : DemoAsk()
+    class Agree(val request: MeldAgreementRequest, val answer: (Boolean) -> Unit) : DemoAsk()
+}
+
+// SDK: answer each request through its callback. The SDK never accepts terms on its own.
+@Composable
+private fun AskDialog(ask: DemoAsk, onCancel: () -> Unit, onDone: () -> Unit) {
+    when (ask) {
+        is DemoAsk.Collect -> {
+            val values = remember(ask) { mutableStateMapOf<String, String>() }
+            AlertDialog(
+                onDismissRequest = { onCancel(); onDone() },
+                title = { Text("Details for ${ask.request.serviceProviders.joinToString()}") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ask.request.fields.forEach { field ->
+                            val error = ask.request.fieldErrors?.firstOrNull { it.key == field.key }
+                            OutlinedTextField(
+                                value = values[field.key] ?: "",
+                                onValueChange = { values[field.key] = it },
+                                label = { Text(field.label ?: field.key) },
+                                isError = error != null,
+                                supportingText = error?.let { { Text(it.reason) } },
+                                singleLine = true,
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        ask.answer(ask.request.fields.associate { it.key to (values[it.key] ?: "").trim() })
+                        onDone()
+                    }) { Text("Submit") }
+                },
+                dismissButton = { TextButton(onClick = { onCancel(); onDone() }) { Text("Cancel") } },
+            )
+        }
+        is DemoAsk.Agree -> AlertDialog(
+            onDismissRequest = { ask.answer(false); onDone() },
+            title = { Text("${ask.request.serviceProvider} terms") },
+            text = { Text("Accept ${ask.request.serviceProvider}'s terms${ask.request.url?.let { " at $it" } ?: ""}?") },
+            confirmButton = { TextButton(onClick = { ask.answer(true); onDone() }) { Text("Accept") } },
+            dismissButton = { TextButton(onClick = { ask.answer(false); onDone() }) { Text("Decline") } },
+        )
+    }
+}
+
+private fun describe(result: MeldReadyResult): String = when (result.status) {
+    MeldReadyStatus.READY, MeldReadyStatus.UNDETERMINED -> "requirements: ${result.status} — create the order"
+    // SDK: pending is empty when nothing here can run and nothing is waited on; the providers' open steps name it.
+    MeldReadyStatus.ACTION_REQUIRED -> "requirements: action required (" +
+        result.pending.orEmpty().map { it.code }.ifEmpty { result.providers.flatMap { it.open }.map { it.code } }.joinToString() + ")"
+    MeldReadyStatus.FAILED -> "requirements: failed ${listOfNotNull(result.error?.kind?.raw, result.error?.status, result.error?.code).joinToString(" ")}"
+    else -> "requirements: ${result.status}"
 }
 
 private fun describe(readiness: MeldReadiness): String = when (readiness) {
