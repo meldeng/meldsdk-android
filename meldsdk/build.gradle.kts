@@ -42,6 +42,8 @@ android {
 }
 
 dependencies {
+    api(libs.androidx.activity)
+    implementation(libs.androidx.browser)
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.annotation)
     implementation(libs.play.services.wallet) {

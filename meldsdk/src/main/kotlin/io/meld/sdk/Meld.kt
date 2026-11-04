@@ -1,12 +1,22 @@
 package io.meld.sdk
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.util.Log
 import android.view.ViewGroup
+import androidx.activity.ComponentActivity
 import io.meld.sdk.coinme.CoinmeCardAdapter
 import io.meld.sdk.hosted.HostedWalletLinkAdapter
 import io.meld.sdk.hosted.MainScheduler
+import io.meld.sdk.requirements.BrowserPresenter
+import io.meld.sdk.requirements.MeldReadyHandle
+import io.meld.sdk.requirements.MeldReadyHandlers
+import io.meld.sdk.requirements.MeldReadyOptions
+import io.meld.sdk.requirements.MeldReadyResult
+import io.meld.sdk.requirements.MeldRequirementsSession
+import io.meld.sdk.requirements.RequirementsLoop
+import io.meld.sdk.requirements.isHttpsPage
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -16,6 +26,7 @@ import org.json.JSONObject
 //   Meld.capabilities(order)
 //   Meld.mount(order, host, handlers)   or   Meld.mount(order, activity, handlers)
 //   handle.unmount()
+//   Meld.ensureReady(activity, session, handlers) { result -> }   before the order exists
 // The order's declared protocol selects its adapter; legacy hints apply only if absent, so
 // supporting a new provider does not change this API. Supported today: Mercuryo card.
 
@@ -328,6 +339,42 @@ object Meld {
         val gate = TerminalGate()
         val session = present(adapter, handlers.forMount(order, gate))
         return MeldWidgetHandle(adapter.capabilities.surface, session, gate)
+    }
+
+    /**
+     * Run the customer's requirements session before you create the order: Meld plans each step, and the SDK
+     * runs the ones it can, asking [handlers] for what only your app can supply. Hosted pages open in a Custom
+     * Tab. [onResult] runs once, on the main thread; destroying [activity] cancels the run. Call on the main
+     * thread. The session runs against the environment set with [configure]; one minted in another environment
+     * is refused with 401 and ends `EXPIRED` after the one [MeldReadyHandlers.renewSession].
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun ensureReady(
+        activity: ComponentActivity,
+        session: MeldRequirementsSession,
+        handlers: MeldReadyHandlers,
+        options: MeldReadyOptions = MeldReadyOptions(),
+        onResult: (MeldReadyResult) -> Unit,
+    ): MeldReadyHandle {
+        val loop = RequirementsLoop(environment, handlers, options, BrowserPresenter(activity), onResult)
+        loop.bind(activity.lifecycle)
+        loop.start(session)
+        return loop
+    }
+
+    /**
+     * Open the hosted verification page a create refusal carried (`serviceProviderDetails.hostedVerificationUrl`),
+     * then create again with a new `externalOrderId`. [onClose] runs on the main thread once the customer is back.
+     * Throws [IllegalArgumentException] for a page that is not https, and [ActivityNotFoundException] when no
+     * app on the device can open it. Call on the main thread.
+     */
+    @JvmStatic
+    @Throws(ActivityNotFoundException::class)
+    fun openHostedVerification(activity: ComponentActivity, url: String, onClose: () -> Unit) {
+        require(isHttpsPage(url)) { "openHostedVerification opens https pages only." }
+        BrowserPresenter(activity).present(url, onClose)
+            ?: throw ActivityNotFoundException("No app on this device can open the verification page.")
     }
 
     /** First registered adapter that handles the order, or null if none do. */
