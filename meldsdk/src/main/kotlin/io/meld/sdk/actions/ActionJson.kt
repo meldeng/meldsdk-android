@@ -48,9 +48,9 @@ internal fun jsonPointer(root: Map<String, Any?>, pointer: String): Any? {
     return current
 }
 
-/** A JSON object body of at most [MAX_ACTION_BODY_BYTES], as Kotlin collections; null if it is anything else. */
-internal fun decodeActionObject(body: ByteArray): Map<String, Any?>? {
-    if (body.size > MAX_ACTION_BODY_BYTES) return null
+/** A JSON object body of at most [limit] bytes, as Kotlin collections; null if it is anything else. */
+internal fun decodeActionObject(body: ByteArray, limit: Int = MAX_ACTION_BODY_BYTES): Map<String, Any?>? {
+    if (body.size > limit) return null
     return try {
         JSONObject(String(body, Charsets.UTF_8)).toMap()
     } catch (_: JSONException) {

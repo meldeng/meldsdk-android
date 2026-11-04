@@ -13,6 +13,15 @@ internal fun interface ActionConnector {
     fun open(url: URL): HttpURLConnection
 }
 
+/** What a [PaymentActionClient] posts to: an order's declared actions or a requirements session. */
+internal interface ActionEndpoint {
+    /** The largest answer this endpoint sends, in bytes. */
+    val maxResponseBytes: Int get() = MAX_ACTION_BODY_BYTES
+
+    /** The POST for a declared [operation]. [key] is present exactly when the operation requires one. */
+    fun request(operation: String, fields: Map<String, Any?> = emptyMap(), key: UUID? = null): ActionRequest
+}
+
 /** Sends one declared action and returns its versioned JSON answer. Blocks, so never call it on main. */
 internal fun interface PaymentActionTransport {
     fun execute(operation: String, fields: Map<String, Any?>, key: UUID?): Map<String, Any?>
@@ -35,7 +44,7 @@ internal interface PaymentActionSending : PaymentActionTransport {
     fun finish()
 }
 
-/** One action's HTTP answer, undecoded. [body] is null when there is none or it is over [MAX_ACTION_BODY_BYTES]. */
+/** One action's HTTP answer, undecoded. [body] is null when there is none or it is over the endpoint's limit. */
 internal class PaymentActionResponse(val status: Int, val body: String?)
 
 /**
@@ -46,7 +55,7 @@ internal class PaymentActionResponse(val status: Int, val body: String?)
  * and authorizes only the bearer.
  */
 internal class PaymentActionClient(
-    val descriptor: PaymentActionDescriptor,
+    val descriptor: ActionEndpoint,
     private val queue: ActionQueue = ActionQueue(),
     private val connector: ActionConnector = ActionConnector { url -> url.openConnection() as HttpURLConnection },
 ) : PaymentActionSending {
@@ -58,7 +67,7 @@ internal class PaymentActionClient(
     override fun execute(operation: String, fields: Map<String, Any?>, key: UUID?): Map<String, Any?> {
         val (status, body) = post(descriptor.request(operation, fields, key))
         if (status !in 200..299) throw PaymentActionFailureCode.decode(body, status)
-        val json = body?.let(::decodeActionObject)
+        val json = body?.let { decodeActionObject(it, descriptor.maxResponseBytes) }
         if (json == null || strictInt(json["version"]) != 1) throw PaymentActionException.InvalidResponse
         return json
     }
@@ -69,7 +78,7 @@ internal class PaymentActionClient(
      */
     fun relay(operation: String, fields: Map<String, Any?>, key: UUID?): PaymentActionResponse? = try {
         val (status, body) = post(descriptor.request(operation, fields, key))
-        PaymentActionResponse(status, body?.takeIf { it.size <= MAX_ACTION_BODY_BYTES }?.toString(Charsets.UTF_8))
+        PaymentActionResponse(status, body?.takeIf { it.size <= descriptor.maxResponseBytes }?.toString(Charsets.UTF_8))
     } catch (_: PaymentActionException) {
         null
     }
@@ -108,7 +117,7 @@ internal class PaymentActionClient(
         val status = connection.responseCode
         if (status < 100) throw PaymentActionException.InvalidResponse
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        return status to stream?.use(::readBounded)
+        return status to stream?.use { readBounded(it, descriptor.maxResponseBytes) }
     }
 
     private companion object {
@@ -116,11 +125,11 @@ internal class PaymentActionClient(
         const val READ_TIMEOUT_MS = 30_000
 
         /** One byte past the limit, so an oversized body is seen as oversized without reading the rest. */
-        fun readBounded(stream: InputStream): ByteArray {
+        fun readBounded(stream: InputStream, limit: Int): ByteArray {
             val out = ByteArrayOutputStream()
             val buffer = ByteArray(8_192)
-            while (out.size() <= MAX_ACTION_BODY_BYTES) {
-                val read = stream.read(buffer, 0, minOf(buffer.size, MAX_ACTION_BODY_BYTES + 1 - out.size()))
+            while (out.size() <= limit) {
+                val read = stream.read(buffer, 0, minOf(buffer.size, limit + 1 - out.size()))
                 if (read < 0) break
                 out.write(buffer, 0, read)
             }
