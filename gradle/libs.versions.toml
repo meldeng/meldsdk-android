@@ -5,6 +5,7 @@ androidx-webkit = "1.14.0"
 androidx-annotation = "1.9.1"
 androidx-core = "1.13.1"
 androidx-activity = "1.9.3"
+androidx-browser = "1.8.0"
 androidx-lifecycle = "2.8.7"
 compose-bom = "2024.10.01"
 coroutines = "1.8.1"
@@ -17,7 +18,9 @@ vanniktech-publish = "0.30.0"
 androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "androidx-webkit" }
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "androidx-annotation" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidx-core" }
+androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "androidx-activity" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "androidx-activity" }
+androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "androidx-browser" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "androidx-lifecycle" }
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
