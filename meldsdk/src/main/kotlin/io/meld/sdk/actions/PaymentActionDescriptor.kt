@@ -18,29 +18,14 @@ internal class PaymentActionDescriptor private constructor(
     val provider: String,
     private val bearer: String,
     val operations: Map<String, Boolean>,
-) {
+) : ActionEndpoint {
     /** The durable attempt identity; an explicit `:443` names the same endpoint. */
     val identity: String get() = "https://${endpoint.host}${endpoint.path}"
 
     override fun toString(): String = "PaymentActionDescriptor[REDACTED]"
 
-    /** The POST for a declared [operation]. [key] is present exactly when the operation requires one. */
-    fun request(operation: String, fields: Map<String, Any?> = emptyMap(), key: UUID? = null): ActionRequest {
-        val required = operations[operation] ?: throw PaymentActionException.InvalidRequest
-        if (required != (key != null) || "version" in fields || "operation" in fields) {
-            throw PaymentActionException.InvalidRequest
-        }
-        val body = encodeActionObject(fields + mapOf("version" to 1, "operation" to operation))
-        if (body.size > MAX_ACTION_BODY_BYTES) throw PaymentActionException.InvalidRequest
-        val headers = linkedMapOf(
-            "Content-Type" to "application/json",
-            "Accept" to "application/json",
-            "Cache-Control" to "no-store",
-            "Authorization" to "Bearer $bearer",
-        )
-        if (key != null) headers["X-Idempotency-Key"] = key.toString()
-        return ActionRequest(endpoint, headers, body)
-    }
+    override fun request(operation: String, fields: Map<String, Any?>, key: UUID?): ActionRequest =
+        declaredRequest(endpoint, bearer, operations, operation, fields, key)
 
     companion object {
         private const val TAG = "MeldSDK"
@@ -109,6 +94,31 @@ internal class PaymentActionDescriptor private constructor(
 
         private fun invalid(): Nothing = throw PaymentActionException.InvalidDescriptor
     }
+}
+
+/** The POST for a declared [operation]. [key] is present exactly when the operation requires one. */
+internal fun declaredRequest(
+    endpoint: URI,
+    bearer: String,
+    operations: Map<String, Boolean>,
+    operation: String,
+    fields: Map<String, Any?>,
+    key: UUID?,
+): ActionRequest {
+    val required = operations[operation] ?: throw PaymentActionException.InvalidRequest
+    if (required != (key != null) || "version" in fields || "operation" in fields) {
+        throw PaymentActionException.InvalidRequest
+    }
+    val body = encodeActionObject(fields + mapOf("version" to 1, "operation" to operation))
+    if (body.size > MAX_ACTION_BODY_BYTES) throw PaymentActionException.InvalidRequest
+    val headers = linkedMapOf(
+        "Content-Type" to "application/json",
+        "Accept" to "application/json",
+        "Cache-Control" to "no-store",
+        "Authorization" to "Bearer $bearer",
+    )
+    if (key != null) headers["X-Idempotency-Key"] = key.toString()
+    return ActionRequest(endpoint, headers, body)
 }
 
 /** One action POST. Redacted: its headers hold the bearer and its body the customer's payment. */

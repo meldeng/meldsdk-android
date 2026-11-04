@@ -115,6 +115,21 @@ class PaymentActionClientTest {
         assertEquals(65_537, opened.last().bytesRead)
     }
 
+    @Test fun an_endpoint_may_declare_a_larger_answer_and_reading_stops_one_byte_past_it() {
+        val wide = object : ActionEndpoint by descriptor() {
+            override val maxResponseBytes = 262_144
+        }
+        fun answer(json: String) = PaymentActionClient(wide, ActionQueue(DirectExecutor(), VirtualClock())) { url ->
+            FakeConnection(url, 200, json.toByteArray()).also { opened += it }
+        }
+        val envelope = """{"version":1,"pad":""}""".length
+        val fits = """{"version":1,"pad":"${"x".repeat(262_144 - envelope)}"}"""
+        assertEquals(1, answer(fits).execute("READ_SUBMISSION", emptyMap(), null)["version"])
+        val over = """{"version":1,"pad":"${"x".repeat(262_145 - envelope)}"}"""
+        assertSame(PaymentActionException.InvalidResponse, failure(answer(over)))
+        assertEquals(262_145, opened.last().bytesRead)
+    }
+
     @Test fun every_io_failure_is_a_transport_failure_and_always_disconnects() {
         for (stage in listOf("connect", "write", "status", "read")) {
             assertSame(stage, PaymentActionException.Transport, failure(client { FakeConnection(it, failAt = stage) }))

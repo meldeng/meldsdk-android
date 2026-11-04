@@ -33,6 +33,24 @@ class PaymentActionErrorTest {
         }
     }
 
+    @Test fun an_invalid_request_keeps_only_the_keys_and_reasons_of_its_field_errors() {
+        val json = body("version" to 1, "code" to "INVALID_REQUEST", "fieldErrors" to listOf(
+            mapOf("key" to "email", "reason" to "INVALID", "value" to "synthetic-private"),
+            mapOf("key" to "otp", "reason" to "FUTURE_REASON"),
+            mapOf("key" to "", "reason" to "REQUIRED"), mapOf("key" to 7, "reason" to "REQUIRED"), mapOf("key" to "name.firstName"),
+            "email", mapOf("key" to "k".repeat(257), "reason" to "INVALID"),
+        ))
+        val error = PaymentActionFailureCode.decode(json, 400) as PaymentActionException.Action
+        assertEquals(listOf(ActionFieldError("email", "INVALID"), ActionFieldError("otp", "FUTURE_REASON")), error.fieldErrors)
+        assertEquals("action:INVALID_REQUEST", error.toString())
+        for (fieldErrors in listOf(null, "email", mapOf("key" to "email"))) {
+            val bare = PaymentActionFailureCode.decode(body("version" to 1, "code" to "INVALID_REQUEST", "fieldErrors" to fieldErrors), 400)
+            assertEquals(emptyList<ActionFieldError>(), (bare as PaymentActionException.Action).fieldErrors)
+        }
+        val other = body("version" to 1, "code" to "REQUEST_CONFLICT", "fieldErrors" to listOf(mapOf("key" to "email", "reason" to "INVALID")))
+        assertEquals(emptyList<ActionFieldError>(), (PaymentActionFailureCode.decode(other, 409) as PaymentActionException.Action).fieldErrors)
+    }
+
     @Test fun errors_carry_no_message_cause_or_stack() {
         for (error in listOf(PaymentActionException.Transport, PaymentActionException.Http(400),
             PaymentActionException.Action(PaymentActionFailureCode.OUTCOME_UNKNOWN))) {

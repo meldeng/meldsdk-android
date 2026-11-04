@@ -9,7 +9,11 @@ internal sealed class PaymentActionException(private val label: String) : Except
     object Storage : PaymentActionException("storage")
     object AlreadyAttempted : PaymentActionException("alreadyAttempted")
     class Http(val status: Int) : PaymentActionException("http($status)")
-    class Action(val code: PaymentActionFailureCode) : PaymentActionException("action:${code.name}")
+    class Action(
+        val code: PaymentActionFailureCode,
+        /** The keys an `INVALID_REQUEST` names and why, never their values. */
+        val fieldErrors: List<ActionFieldError> = emptyList(),
+    ) : PaymentActionException("action:${code.name}")
 
     override fun toString(): String = label
 }
@@ -38,7 +42,20 @@ internal enum class PaymentActionFailureCode(val httpStatus: Int) {
             if (strictInt(json["version"]) != 1 || code == null || code.httpStatus != status) {
                 return PaymentActionException.Http(status)
             }
-            return PaymentActionException.Action(code)
+            if (code != INVALID_REQUEST) return PaymentActionException.Action(code)
+            return PaymentActionException.Action(code, fieldErrors(json["fieldErrors"]))
         }
+
+        private fun fieldErrors(raw: Any?): List<ActionFieldError> = (raw as? List<*>).orEmpty().mapNotNull { entry ->
+            val error = entry as? Map<*, *> ?: return@mapNotNull null
+            val key = (error["key"] as? String)?.takeIf { it.length in 1..MAX_FIELD_KEY_LENGTH } ?: return@mapNotNull null
+            val reason = (error["reason"] as? String)?.takeIf { it.length in 1..MAX_FIELD_KEY_LENGTH } ?: return@mapNotNull null
+            ActionFieldError(key, reason)
+        }
+
+        private const val MAX_FIELD_KEY_LENGTH = 256
     }
 }
+
+/** A field a request got wrong: its key and the reason (`REQUIRED`, `INVALID`, `UNSUPPORTED` or a newer one). */
+internal data class ActionFieldError(val key: String, val reason: String)
